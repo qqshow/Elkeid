@@ -139,6 +139,7 @@ func handleReceive(ctx context.Context, wg *sync.WaitGroup, client proto.Transfe
 		zap.S().Info("received command")
 		atomic.AddUint64(&rxCnt, 1)
 		if cmd.Task != nil {
+			zap.S().Info("command objectName %v. DataType %v.", cmd.Task.ObjectName, cmd.Task.DataType)
 			// 给agent的任务
 			if cmd.Task.ObjectName == agent.Product {
 				switch cmd.Task.DataType {
