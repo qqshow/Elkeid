@@ -26,5 +26,5 @@ for arch in amd64 arm64; do
     nfpm package -p rpm
     cd ../
     cp build/*.deb build/*.rpm output
-    rm -rf build
+    #rm -rf build
 done
