@@ -1,17 +1,13 @@
-FROM cern/c8-base:latest AS rhel8
+FROM oraclelinux:8 AS rhel8
 
-RUN yum install -y wget perl gcc make tree elfutils-libelf-devel; 
-RUN yum groupinstall -y  "Development Tools"; 
+RUN dnf install -y wget perl gcc make tree elfutils-libelf-devel openssl-devel openssl; 
+RUN dnf groupinstall -y  "Development Tools"; 
 RUN mkdir /root/headers
 
-RUN cd /root/headers; \
- wget -q -k -e robots=off  -c -r -np -nd -nH -A  'kernel-devel*x86_64.rpm' 'https://mirrors.tuna.tsinghua.edu.cn/cc/8.0/BaseOS/x86_64/os/Packages/'; \
- wget -q -k -e robots=off  -c -r -np -nd -nH -A  'kernel-devel*x86_64.rpm' 'https://mirrors.tuna.tsinghua.edu.cn/cc/8.1/BaseOS/x86_64/os/Packages/'; \
- wget -q -k -e robots=off  -c -r -np -nd -nH -A  'kernel-devel*x86_64.rpm' 'https://mirrors.tuna.tsinghua.edu.cn/cc/8.2/BaseOS/x86_64/os/Packages/'; \
- wget -q -k -e robots=off  -c -r -np -nd -nH -A  'kernel-devel*x86_64.rpm' 'https://mirrors.tuna.tsinghua.edu.cn/cc/8.3/BaseOS/x86_64/os/Packages/';  \
- wget -q -k -e robots=off  -c -r -np -nd -nH -A  'kernel-devel*x86_64.rpm' 'https://mirrors.tuna.tsinghua.edu.cn/cc/8.4/BaseOS/x86_64/os/Packages/';  \
- wget -q -k -e robots=off  -c -r -np -nd -nH -A 'kernel-devel*x86_64.rpm' 'https://mirrors.tuna.tsinghua.edu.cn/cc/8.5/BaseOS/x86_64/os/Packages/'; \
- wget -q -k -e robots=off  -c -r -np -nd -nH -A 'kernel-devel*x86_64.rpm' 'http://repos-va.psychz.net/centos/8-stream/BaseOS/x86_64/os/Packages/';
+RUN for eachversion in `dnf --showduplicates list kernel-devel | grep kernel-devel.x86_64 | awk '{print $2}'` ; do dnf download --downloaddir=/root/headers kernel-devel-$eachversion.x86_64 || true ; done;
+RUN wget -q -k -e robots=off  -c -r -np -nd -nH -A 'kernel-devel*x86_64.rpm' 'http://repos-va.psychz.net/centos/8-stream/BaseOS/x86_64/os/Packages/'
+RUN wget -q -k -e robots=off  -c -r -np -nd -nH -A 'kernel-devel*x86_64.rpm' 'https://mirrors.tuna.tsinghua.edu.cn/centos/8-stream/BaseOS/x86_64/os/Packages/'
+
 RUN rpm --force -i /root/headers/*.rpm || true
 
 ADD . /elkeid

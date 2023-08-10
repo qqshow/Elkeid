@@ -566,6 +566,7 @@ struct execve_data {
     char *ssh_connection;
     char *ld_preload;
 
+    int len_argv;
     int free_argv;
     int free_ssh_connection;
     int free_ld_preload;
@@ -686,8 +687,7 @@ int bind_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 
     buffer = smith_kzalloc(PATH_MAX, GFP_ATOMIC);
     exe_path = smith_get_exe_file(buffer, PATH_MAX);
-
-    if (!execve_exe_check(exe_path)) {
+    if (!execve_exe_check(exe_path, strlen(exe_path))) {
         if (sa_family == AF_INET)
             bind_print(exe_path, in_addr, sport, retval);
 #if IS_ENABLED(CONFIG_IPV6)
@@ -798,8 +798,7 @@ int connect_syscall_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
     if (dport != 0) {
         buffer = smith_kzalloc(PATH_MAX, GFP_ATOMIC);
         exe_path = smith_get_exe_file(buffer, PATH_MAX);
-
-        if (!execve_exe_check(exe_path)) {
+        if (!execve_exe_check(exe_path, strlen(exe_path))) {
             if (sa_family == AF_INET)
                 connect4_print(dport, dip4, exe_path, sip4, sport, retval);
 #if IS_ENABLED(CONFIG_IPV6)
@@ -843,7 +842,7 @@ int connect_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
     exe_path = smith_get_exe_file(buffer, PATH_MAX);
 
     //exe filter check
-    if (execve_exe_check(exe_path)) {
+    if (execve_exe_check(exe_path, strlen(exe_path))) {
         if (buffer)
             smith_kfree(buffer);
         return 0;
@@ -1099,7 +1098,9 @@ int execve_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 
     //exe filter check and argv filter check
     exe_path = smith_query_exe_path(&buffer, PATH_MAX, 128);
-    if (execve_exe_check(exe_path) || execve_argv_check(data->argv))
+    if (execve_exe_check(exe_path, strlen(exe_path)))
+        goto out;
+    if (execve_argv_check(data->argv, data->len_argv))
         goto out;
 
     get_process_socket(&sip4, &sip6, &sport, &dip4, &dip6, &dport,
@@ -1234,6 +1235,7 @@ void get_execve_data(struct user_arg_ptr argv_ptr, struct user_arg_ptr env_ptr,
 				*(argv_res + offset) = '\0';
 			else
 				strcpy(argv_res, "<FAIL>");
+			smith_strim(argv_res);
 		}
 	}
 
@@ -1302,6 +1304,7 @@ void get_execve_data(struct user_arg_ptr argv_ptr, struct user_arg_ptr env_ptr,
 	data->free_ld_preload = free_ld_preload;
 
 	data->argv = argv_res;
+	data->len_argv = argv_res ? strlen(argv_res) : 0;
 	data->free_argv = free_argv;
 }
 
@@ -1442,6 +1445,7 @@ void get_execve_data(char **argv, char **env, struct execve_data *data)
                 *(argv_res + offset) = '\0';
             else
                 strcpy(argv_res, "<FAIL>");
+            smith_strim(argv_res);
         }
     }
 
@@ -1512,6 +1516,7 @@ void get_execve_data(char **argv, char **env, struct execve_data *data)
     data->free_ld_preload = free_ld_preload;
 
     data->argv = argv_res;
+    data->len_argv = argv_res ? strlen(argv_res) : 0;
     data->free_argv = free_argv;
 }
 
@@ -1563,7 +1568,7 @@ int security_inode_create_pre_handler(struct kprobe *p, struct pt_regs *regs)
     exe_path = smith_get_exe_file(buffer, PATH_MAX);
 
     //exe filter check
-    if (execve_exe_check(exe_path))
+    if (execve_exe_check(exe_path, strlen(exe_path)))
         goto out;
 
     pname_buf = smith_kzalloc(PATH_MAX, GFP_ATOMIC);
@@ -1666,7 +1671,7 @@ void dns_data_transport(char *query, __be32 dip, __be32 sip, int dport,
     exe_path = smith_get_exe_file(buffer, PATH_MAX);
 
     //exe filter check
-    if (execve_exe_check(exe_path))
+    if (execve_exe_check(exe_path, strlen(exe_path)))
         goto out;
 
     dns_print(dport, dip, exe_path, sip, sport, opcode, rcode, query);
@@ -1688,7 +1693,7 @@ void dns6_data_transport(char *query, struct in6_addr *dip,
 	exe_path = smith_get_exe_file(buffer, PATH_MAX);
 
 	//exe filter check
-	if (execve_exe_check(exe_path))
+	if (execve_exe_check(exe_path, strlen(exe_path)))
 		goto out;
 
 	dns6_print(dport, dip, exe_path, sip, sport, opcode, rcode, query);
@@ -1721,9 +1726,30 @@ void udp_msg_parser(struct msghdr *msg, struct udp_recvmsg_data *data) {
     return;
 }
 
-int udp_process_dns(struct udp_recvmsg_data *data, unsigned char *recv_data, int iov_len)
+static void *get_dns_query(unsigned char *data, int query_len, char *res, int *type) {
+    int i;
+    int flag = -1;
+
+    for (i = 0; i < query_len; i++) {
+        if (flag == -1) {
+            flag = (data + 12)[i];
+        } else if (flag == 0) {
+            flag = (data + 12)[i];
+            res[i - 1] = 46;
+        } else {
+            res[i - 1] = (data + 12)[i];
+            flag = flag - 1;
+        }
+    }
+
+    //get dns queries type: https://en.wikipedia.org/wiki/List_of_DNS_record_types
+    *type = be16_to_cpu(*((uint16_t *)(data + query_len + 13)));
+    return 0;
+}
+
+static int udp_process_dns(struct udp_recvmsg_data *data, unsigned char *recv_data, int iov_len)
 {
-    int qr, opcode = 0, rcode = 0;
+    int qr, opcode = 0, rcode = 0, type = 0;
     int query_len = 0;
 
     char *query;
@@ -1733,18 +1759,18 @@ int udp_process_dns(struct udp_recvmsg_data *data, unsigned char *recv_data, int
         opcode = (recv_data[2] >> 3) & 0x0f;
         rcode = recv_data[3] & 0x0f;
 
-        query_len = strlen(recv_data + 12);
-        if (query_len == 0 || query_len > 253) {
+        query_len = strnlen(recv_data + 12, iov_len - 12);
+        if (query_len == 0 || query_len > 253 || query_len + 17 > iov_len) {
             return 0;
         }
 
         //parser DNS protocol and get DNS query info
-        query = smith_kzalloc(query_len, GFP_ATOMIC);
+        query = smith_kzalloc(query_len + 1, GFP_ATOMIC);
         if (!query) {
             return 0;
         }
 
-        __get_dns_query(recv_data, 12, query);
+        get_dns_query(recv_data, query_len, query, &type);
         if (data && data->sa_family == AF_INET)
             dns_data_transport(query, data->dip4,
                                data->sip4, data->dport,
@@ -1762,7 +1788,7 @@ int udp_process_dns(struct udp_recvmsg_data *data, unsigned char *recv_data, int
     return 0;
 }
 
-int udp_recvmsg_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int udp_recvmsg_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
     unsigned char *recv_data = NULL;
     int iov_len = 512;
@@ -1836,8 +1862,8 @@ static void smith_count_dnsv6_kretprobe(void);
  */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 6)
 
-int udp_recvmsg_entry_handler(struct kretprobe_instance *ri,
-                              struct pt_regs *regs) {
+static int udp_recvmsg_entry_handler(struct kretprobe_instance *ri,
+                                     struct pt_regs *regs) {
     int flags;
     void *tmp_msg;
     void *tmp_sk;
@@ -1907,8 +1933,9 @@ do_kretprobe:
 
 #if IS_ENABLED(CONFIG_IPV6)
 static void smith_count_dnsv6_kretprobe(void);
-int udpv6_recvmsg_entry_handler(struct kretprobe_instance *ri,
-				struct pt_regs *regs)
+static int udpv6_recvmsg_entry_handler(
+                struct kretprobe_instance *ri,
+                struct pt_regs *regs)
 {
 	struct sock *sk;
 	struct inet_sock *inet;
@@ -2005,8 +2032,8 @@ do_kretprobe:
 
 #else /* < 3.2.6 */
 
-int udp_recvmsg_entry_handler(struct kretprobe_instance *ri,
-                              struct pt_regs *regs) {
+static int udp_recvmsg_entry_handler(struct kretprobe_instance *ri,
+                                     struct pt_regs *regs) {
     int flags;
     void *tmp_msg;
     void *tmp_sk;
@@ -2075,8 +2102,9 @@ do_kretprobe:
 
 #if IS_ENABLED(CONFIG_IPV6)
 static void smith_count_dnsv6_kretprobe(void);
-int udpv6_recvmsg_entry_handler(struct kretprobe_instance *ri,
-				struct pt_regs *regs)
+static int udpv6_recvmsg_entry_handler(
+                struct kretprobe_instance *ri,
+                struct pt_regs *regs)
 {
 	struct sock *sk;
 	struct inet_sock *inet;
@@ -2314,7 +2342,7 @@ out:
 }
 #endif
 
-static struct nf_hook_ops g_smith_nf_hooks[] = {
+static struct nf_hook_ops g_smith_nf_udp[] = {
 	{
 		.hook =		smith_nf_udp_v4_handler,
 		.pf =		NFPROTO_IPV4,
@@ -2331,23 +2359,45 @@ static struct nf_hook_ops g_smith_nf_hooks[] = {
 #endif
 };
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+
 static int smith_nf_udp_reg(struct net *net)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-    return nf_register_net_hooks(net, g_smith_nf_hooks, ARRAY_SIZE(g_smith_nf_hooks));
-#else
-    return nf_register_hooks(g_smith_nf_hooks, ARRAY_SIZE(g_smith_nf_hooks));
-#endif
+    return nf_register_net_hooks(net, g_smith_nf_udp, ARRAY_SIZE(g_smith_nf_udp));
 }
 
 static void smith_nf_udp_unreg(struct net *net)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-    nf_unregister_net_hooks(net, g_smith_nf_hooks, ARRAY_SIZE(g_smith_nf_hooks));
-#else
-    nf_unregister_hooks(g_smith_nf_hooks, ARRAY_SIZE(g_smith_nf_hooks));
-#endif
+    nf_unregister_net_hooks(net, g_smith_nf_udp, ARRAY_SIZE(g_smith_nf_udp));
 }
+
+#else
+
+static atomic_t g_nf_udp_regged = ATOMIC_INIT(0);
+
+static int smith_nf_udp_reg(struct net *net)
+{
+    int rc = 0;
+
+    /*
+     * only do register for the 1st time. We need control the callings of
+     * nf_register_hooks if we keep register_pernet_subsys for kernels < 4.3
+     */
+    if (1 == atomic_inc_return(&g_nf_udp_regged))
+        rc = nf_register_hooks(g_smith_nf_udp, ARRAY_SIZE(g_smith_nf_udp));
+
+    return rc;
+}
+
+static void smith_nf_udp_unreg(struct net *net)
+{
+    /* do cleanup for the last instance of net namespace */
+    if (0 == atomic_dec_return(&g_nf_udp_regged))
+        nf_unregister_hooks(g_smith_nf_udp, ARRAY_SIZE(g_smith_nf_udp));
+}
+
+#endif /* >= 4.3.0 */
+
 
 static struct pernet_operations smith_net_ops = {
 	.init = smith_nf_udp_reg,
@@ -2387,11 +2437,7 @@ static int smith_dns_work_handler(void *argu)
 #endif
     } while (!kthread_should_stop());
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
-    kthread_complete_and_exit(NULL, 0);
-#else
-    do_exit(0);
-#endif
+    /* kernen thread entry aka kernel() will finally call do_exit */
     return 0;
 }
 
@@ -2525,26 +2571,44 @@ static DEFINE_MUTEX(g_nf_psad_lock);
 static int g_nf_psad_switch = 0;
 static int g_nf_psad_status = 0;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+
 static int smith_nf_psad_reg(struct net *net)
 {
-    int rc;
+    return nf_register_net_hooks(net, g_smith_nf_psad, ARRAY_SIZE(g_smith_nf_psad));
+}
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-    rc = nf_register_net_hooks(net, g_smith_nf_psad, ARRAY_SIZE(g_smith_nf_psad));
+static void smith_nf_psad_unreg(struct net *net)
+{
+    nf_unregister_net_hooks(net, g_smith_nf_psad, ARRAY_SIZE(g_smith_nf_psad));
+}
+
 #else
-    rc = nf_register_hooks(g_smith_nf_psad, ARRAY_SIZE(g_smith_nf_psad));
-#endif
+
+static atomic_t g_nf_psad_regged = ATOMIC_INIT(0);
+
+static int smith_nf_psad_reg(struct net *net)
+{
+    int rc = 0;
+
+    /*
+     * only do register for the 1st time. We need control the callings of
+     * nf_register_hooks if we keep register_pernet_subsys for kernels < 4.3
+     */
+    if (1 == atomic_inc_return(&g_nf_psad_regged))
+        rc = nf_register_hooks(g_smith_nf_psad, ARRAY_SIZE(g_smith_nf_psad));
+
     return rc;
 }
 
 static void smith_nf_psad_unreg(struct net *net)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-    nf_unregister_net_hooks(net, g_smith_nf_psad, ARRAY_SIZE(g_smith_nf_psad));
-#else
-    nf_unregister_hooks(g_smith_nf_psad, ARRAY_SIZE(g_smith_nf_psad));
-#endif
+    /* do cleanup for the last instance of net namespace */
+    if (0 == atomic_dec_return(&g_nf_psad_regged))
+        nf_unregister_hooks(g_smith_nf_psad, ARRAY_SIZE(g_smith_nf_psad));
 }
+
+#endif /* >= 4.3.0 */
 
 static struct pernet_operations smith_psad_net_ops = {
     .init = smith_nf_psad_reg,
@@ -2769,8 +2833,7 @@ void rename_and_link_handler(int type, char * oldori, char * newori, char * s_id
 
     buffer = smith_kzalloc(PATH_MAX, GFP_ATOMIC);
     exe_path = smith_get_exe_file(buffer, PATH_MAX);
-
-    if (execve_exe_check(exe_path))
+    if (execve_exe_check(exe_path, strlen(exe_path)))
         goto out_free;
 
     if (type)
@@ -2904,8 +2967,7 @@ int setsid_pre_handler(struct kprobe *p, struct pt_regs *regs)
 
     buffer = smith_kzalloc(PATH_MAX, GFP_ATOMIC);
     exe_path = smith_get_exe_file(buffer, PATH_MAX);
-
-    if (execve_exe_check(exe_path))
+    if (execve_exe_check(exe_path, strlen(exe_path)))
         goto out;
 
     setsid_print(exe_path);
@@ -2961,8 +3023,7 @@ int prctl_pre_handler(struct kprobe *p, struct pt_regs *regs)
 
     buffer = smith_kzalloc(PATH_MAX, GFP_ATOMIC);
     exe_path = smith_get_exe_file(buffer, PATH_MAX);
-
-    if (execve_exe_check(exe_path))
+    if (execve_exe_check(exe_path, strlen(exe_path)))
         goto out;
 
     prctl_print(exe_path, PR_SET_NAME, newname);
@@ -3346,8 +3407,7 @@ int mount_pre_handler(struct kprobe *p, struct pt_regs *regs)
 
     buffer = smith_kzalloc(PATH_MAX, GFP_ATOMIC);
     exe_path = smith_get_exe_file(buffer, PATH_MAX);
-
-    if (!execve_exe_check(exe_path))
+    if (!execve_exe_check(exe_path, strlen(exe_path)))
         mount_print(exe_path, pid_tree, dev_name, file_path, fstype, flags);
 
     if (buffer)
