@@ -12,11 +12,10 @@
 #if ANTI_ROOTKIT_CHECK
 
 #include <linux/kthread.h>
+#include "../include/util.h"
 #include "../include/trace.h"
-#include "../include/struct_wrap.h"
 #include "../include/kprobe.h"
 #include "../include/anti_rootkit.h"
-#include "../include/util.h"
 
 #define CREATE_PRINT_EVENT
 #include "../include/anti_rootkit_print.h"
@@ -59,7 +58,11 @@ static const char *find_hidden_module(unsigned long addr)
         if (!kobj || !kobj->mod)
             continue;
 
-#ifdef KMOD_CORE_LAYOUT
+#if defined(KMOD_MODULE_MEM)
+		if (BETWEEN_PTR(addr, kobj->mod->mem[MOD_TEXT].base,
+			kobj->mod->mem[MOD_TEXT].size))
+			mod_name = kobj->mod->name;
+#elif defined(KMOD_CORE_LAYOUT) || LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)
 		/*
 		 * vanilla kernels (kernel.org): >= 4.5.0
 		 * ubuntu kernels: >= 4.4.0
@@ -165,12 +168,13 @@ static void analyze_interrupts(void)
 
 static void analyze_modules(void)
 {
-    struct kobject *cur;
+	struct kobject *cur;
 	struct module_kobject *kobj;
 
 	if (unlikely(!mod_kset))
 		return;
 
+	module_list_lock();
 	spin_lock(&mod_kset->list_lock);
 	list_for_each_entry(cur, &mod_kset->list, entry) {
 		if (!kobject_name(cur)) {
@@ -184,6 +188,7 @@ static void analyze_modules(void)
 		}
 	}
 	spin_unlock(&mod_kset->list_lock);
+	module_list_unlock();
 }
 
 static void analyze_fops(void)
@@ -204,8 +209,10 @@ static void analyze_fops(void)
 		filp_close(fp, NULL);
 		return;
 	}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 11, 0)
+#if defined(SMITH_FS_OP_ITERATE)
 	addr = (unsigned long)fp->f_op->iterate;
+#elif defined(SMITH_FS_OP_ITERATE_SHARED)
+	addr = (unsigned long)fp->f_op->iterate_shared;
 #else
 	addr = (unsigned long)fp->f_op->readdir;
 #endif
@@ -276,7 +283,7 @@ static int __init anti_rootkit_init(void)
 #endif
     sct = (void *)smith_kallsyms_lookup_name("sys_call_table");
     ckt = (void *)smith_kallsyms_lookup_name("core_kernel_text");
-	mod_lock = (void *)smith_kallsyms_lookup_name("module_lock");
+	mod_lock = (void *)smith_kallsyms_lookup_name("module_mutex");
 	mod_find_module = (void *)smith_kallsyms_lookup_name("find_module");
     get_module_from_addr = (void *)smith_kallsyms_lookup_name("__module_address");
     kset = (void *)smith_kallsyms_lookup_name("module_kset");

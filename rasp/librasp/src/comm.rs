@@ -190,6 +190,26 @@ impl RASPComm for ThreadMode {
         _probe_report_sender: Sender<plugins::Record>,
         _patch_filed: HashMap<&'static str, String>,
     ) -> AnyhowResult<()> {
+        match check_need_mount(_mnt_namespace) {
+            Ok(same_ns) => {
+                if same_ns{
+                    self.using_mount = false;
+                    info!(
+                        "process {} namespace as same as root, so no need to mount, using_mount : {}", pid, self.using_mount
+                    );
+                } else {
+                    self.using_mount = true;
+                    info!(
+                        "process {} namespace are not same as root, so need to mount", pid
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "check_need_mount failed, {}", e
+                );
+            }
+        }
         if self.using_mount {
             if let Some(bind_dir) = std::path::Path::new(&self.bind_path.clone()).parent() {
                 let bind_dir_str = bind_dir.to_str().unwrap();
@@ -249,7 +269,8 @@ impl RASPComm for ThreadMode {
 
 fn mount(pid: i32, from: &str, to: &str) -> AnyhowResult<()> {
     let pid_str = pid.to_string();
-    let args = [pid_str.as_str(), from, to];
+    let nsenter_str = settings::RASP_NS_ENTER_BIN();
+    let args = [pid_str.as_str(), from, to, nsenter_str.as_str()];
     return match run_async_process(
         std::process::Command::new(settings::RASP_MOUNT_SCRIPT_BIN()).args(args),
     ) {
@@ -271,6 +292,15 @@ fn mount(pid: i32, from: &str, to: &str) -> AnyhowResult<()> {
         }
         Err(e) => Err(anyhow!("can not mount: {}", e)),
     };
+}
+
+fn check_need_mount(pid_mntns: &String) -> AnyhowResult<bool> {
+    let root_mnt = std::fs::read_link("/proc/1/ns/mnt")?;
+    debug!(
+        "pid namespace && root namespace : {} && {}",
+        pid_mntns, root_mnt.display()
+    );
+    Ok(&root_mnt.display().to_string() == pid_mntns)
 }
 
 pub struct EbpfMode {

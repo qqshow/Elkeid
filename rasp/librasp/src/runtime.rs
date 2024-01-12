@@ -25,11 +25,12 @@ impl RuntimeInspect for ProcessInfo {}
 pub struct Runtime {
     pub name: &'static str,
     pub version: String,
+    pub size: u64,
 }
 
 impl Display for Runtime {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{} {}", self.name, self.version)
+        write!(f, "{} {} {}", self.name, self.version, self.size)
     }
 }
 
@@ -63,15 +64,32 @@ pub trait RuntimeInspect {
                     return Err(anyhow!("jvm filter deserialize failed: {}", e));
                 }
             };
-        if let Ok(jvm) = jvm_process_filter.match_exe(&process_exe_file) {
-            if jvm {
-                let version = vm_version(process_info.pid)?;
-                let version_string = version.to_string();
-                return Ok(Some(Runtime {
-                    name: "JVM",
-                    version: version_string,
-                }));
-            }
+        let jvm_process_filter_check_reuslt =
+            match jvm_process_filter.match_exe(&process_exe_file) {
+                Ok(o) => o,
+                Err(_) => false,
+            };
+        
+        if  jvm_process_filter_check_reuslt {
+            let version = match vm_version(process_info.pid) {
+                Ok(ver) => {
+                    if ver < 8 {
+                        let msg = format!("process {}, Java version lower than 8: {}, so not inject",process_info.pid, ver);
+                        warn!("Java version lower than 8: {}, so not inject", ver);
+                        return Err(anyhow!(msg));
+                    }
+                    ver.to_string()
+                }
+                Err(e) => {
+                    warn!("read jvm version failed: {}", e);
+                    String::new()
+                }
+            };
+            return Ok(Some(Runtime {
+                name: "JVM",
+                version: version,
+                size: 0,
+            }));
         }
         let cpython_process_filter: RuntimeFilter =
             match serde_json::from_str(DEFAULT_CPYTHON_FILTER_JSON_STR) {
@@ -90,6 +108,7 @@ pub trait RuntimeInspect {
             return Ok(Some(Runtime {
                 name: "CPython",
                 version: String::new(),
+                size: 0,
             }));
         }
         let nodejs_process_filter: RuntimeFilter =
@@ -128,6 +147,7 @@ pub trait RuntimeInspect {
             return Ok(Some(Runtime {
                 name: "NodeJS",
                 version,
+                size: 0,
             }));
         }
         let pid = process_info.pid.clone();
@@ -147,10 +167,11 @@ pub trait RuntimeInspect {
         }
         match golang_bin_inspect(path) {
             Ok(res) => {
-                if res {
+                if res > 0 {
                     return Ok(Some(Runtime {
                         name: "Golang",
                         version: String::new(),
+                        size: res,
                     }));
                 }
             }
@@ -167,11 +188,13 @@ pub trait RuntimeInspect {
                                 return Ok(Some(Runtime {
                                     name: "PHP",
                                     version: format!("{}.zts", version),
+                                    size: 0,
                                 }));
                             } else {
                                 return Ok(Some(Runtime {
                                     name: "PHP",
                                     version: version,
+                                    size: 0,
                                 }));
                             }
                         }
@@ -190,6 +213,7 @@ pub trait RuntimeInspect {
                 return Ok(Some(Runtime {
                     name: "CPython",
                     version,
+                    size: 0,
                 }))
             }
             None => {}
