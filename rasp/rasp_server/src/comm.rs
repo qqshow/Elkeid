@@ -98,12 +98,24 @@ pub async fn start_bind(sock: RASPSock) -> Result<(), String> {
     let mut checking_ctrl = sock.ctrl.clone();
     spawn(async move {
         loop {
+            if !checking_ctrl.check() {
+                info!("check sock receive signal, stop");
+                return;
+            }
             if Path::new(&server_addr).exists() {
                 sleep(Duration::from_secs(60 * 60)).await;
             } else {
                 error!("RASP ERROR: SOCK has been deleted");
-                let _ = checking_ctrl.stop();
-                break;
+
+                match clean_bind_addr(&sock.server_addr.clone()) {
+                    Ok(()) => {
+                        info!("bind: {}", &sock.server_addr.clone());
+                    },
+                    Err(err) => {
+                        error!("clean bind path err: {:?}", err);
+                    },
+                }
+                listen(&sock.server_addr.clone());
             }
         }
     });
@@ -254,6 +266,10 @@ pub async fn looping(
         drop(p)
     });
     loop {
+        if !rx_ctrl.clone().check() {
+            info!("select thread receive quit signal");
+            break;
+        }
         tokio::select! {
             x = sock_tx.recv() => {
                 match x {
