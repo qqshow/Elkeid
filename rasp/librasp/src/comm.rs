@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::Duration;
-use std::fs::{remove_file, read_link, symlink_metadata};
+use std::fs::{remove_file, read_link, symlink_metadata, create_dir_all};
 use std::os::unix::fs;
 use crossbeam::channel::{bounded, Receiver, SendError, Sender};
 use libc::{kill, killpg, SIGKILL};
@@ -193,17 +193,8 @@ impl RASPComm for ThreadMode {
     ) -> AnyhowResult<()> {
         match check_need_mount(_mnt_namespace) {
             Ok(same_ns) => {
-                if same_ns{
-                    self.using_mount = false;
-                    info!(
-                        "process {} namespace as same as root, so no need to mount, using_mount : {}", pid, self.using_mount
-                    );
-                } else {
-                    self.using_mount = true;
-                    info!(
-                        "process {} namespace are not same as root, so need to mount", pid
-                    );
-                }
+                self.using_mount = same_ns;
+                info!("process {} namespace using_mount : {}", pid, self.using_mount);
             }
             Err(e) => {
                 warn!(
@@ -230,8 +221,7 @@ impl RASPComm for ThreadMode {
                 target = resolved_path;
             }
 
-            // check socket exist
-            let _  = remove_file(target.clone());
+            make_path_exist(target.clone());
         
             match fs::symlink(self.bind_path.clone(), target.clone()) {
                 Ok(()) => {
@@ -296,13 +286,23 @@ fn mount(pid: i32, from: &str, to: &str) -> AnyhowResult<()> {
     };
 }
 
-fn check_need_mount(pid_mntns: &String) -> AnyhowResult<bool> {
+pub fn make_path_exist(path: String) -> AnyhowResult<()> {
+    // check socket exist or path not exist
+    let _ = remove_file(path.clone());
+    let current_path = std::path::Path::new(&path).parent().unwrap();
+    if !current_path.exists() {
+        create_dir_all(&current_path)?;
+    }
+    Ok(())
+}
+
+pub fn check_need_mount(pid_mntns: &String) -> AnyhowResult<bool> {
     let root_mnt = std::fs::read_link("/proc/1/ns/mnt")?;
     debug!(
         "pid namespace && root namespace : {} && {}",
         pid_mntns, root_mnt.display()
     );
-    Ok(&root_mnt.display().to_string() == pid_mntns)
+    Ok(&root_mnt.display().to_string() != pid_mntns)
 }
 
 fn resolve_mount_path(path: String, pid: i32) -> String {

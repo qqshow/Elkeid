@@ -62,9 +62,20 @@ pub fn RASP_JAVA_JATTACH_BIN() -> String {
 }
 
 pub fn RASP_JAVA_PROBE_BIN() -> String {
+    format!("{}{}", RASP_LIB_DIR(), "/java/SmithProbe.jar")
+}
+
+pub fn RASP_JAVA_CHECKSUM_PATH() -> String {
+    format!("{}{}", RASP_LIB_DIR(), "/java/checksum.data")
+}
+
+pub fn RASP_JAVA_AGENT_BIN() -> String {
     format!("{}{}", RASP_LIB_DIR(), "/java/SmithAgent.jar")
 }
 
+pub fn RASP_JAVA_DIR() -> String {
+    format!("{}{}", RASP_LIB_DIR(), "/java")
+}
 // NodeJS
 
 pub fn RASP_NODEJS_DIR() -> String {
