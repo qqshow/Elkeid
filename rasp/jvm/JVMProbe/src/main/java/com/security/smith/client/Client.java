@@ -1,9 +1,10 @@
 package com.security.smith.client;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import com.google.gson.GsonBuilder;
 import com.security.smith.client.message.*;
 import com.security.smith.common.ProcessHelper;
 import com.security.smith.log.SmithLogger;
@@ -22,8 +23,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-
-import com.google.gson.Gson;
+import java.nio.charset.StandardCharsets;
+import java.util.stream.Collectors;
 
 interface EventHandler {
     void onReconnect();
@@ -100,13 +101,19 @@ public class Client implements EventHandler {
         if (channel == null || !channel.isActive() || !channel.isWritable())
             return;
 
-        ObjectMapper objectMapper = new ObjectMapper()
-                .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
+        try {
+            //TODO must send metadata first
+            if (operate == Operate.CLASSUPLOAD) {
+                Thread.sleep(1000);
+            }
+        } catch (Exception e) {
+            
+        }
 
         Message message = new Message();
-
         message.setOperate(operate);
-        message.setData(objectMapper.valueToTree(object));
+
+        message.setData((JsonElement)object);
 
         channel.writeAndFlush(message);
     }
@@ -132,12 +139,20 @@ public class Client implements EventHandler {
 
             case Operate.CONFIG:
                 SmithLogger.logger.info("config");
-                messageHandler.onConfig(message.getData().get("config").asText());
+                JsonElement configElement = message.getData().getAsJsonObject().get("config");
+                if (configElement != null && configElement.isJsonPrimitive()) {
+                    String config = configElement.getAsString();
+                    messageHandler.onConfig(config);
+                } 
                 break;
 
             case Operate.CONTROL:
                 SmithLogger.logger.info("control");
-                messageHandler.onControl(message.getData().get("action").asInt());
+                JsonElement actionElement = message.getData().getAsJsonObject().get("action");
+                if (actionElement != null && actionElement.isJsonPrimitive() && actionElement.getAsJsonPrimitive().isNumber()) {
+                    int action = actionElement.getAsInt();
+                    messageHandler.onControl(action);
+                } 
                 break;
 
             case Operate.DETECT:
@@ -231,6 +246,20 @@ public class Client implements EventHandler {
                 Thread scanAllClassThread = new Thread(messageHandler::onScanAllClass);
                 scanAllClassThread.setDaemon(true);
                 scanAllClassThread.start();
+                break;
+            }
+            case Operate.SWITCHES: {
+                SmithLogger.logger.info("switches: " + message.getData().toString());
+
+                try {
+                    Gson gson = new Gson();
+                    SwitchConfig config = gson.fromJson(message.getData().toString(), SwitchConfig.class);
+                    messageHandler.onSwitches(config);
+                } catch (Exception e) {
+                    SmithLogger.exception(e);
+                }
+
+                break;
             }
         }
     }
@@ -245,13 +274,21 @@ public class Client implements EventHandler {
 
         SmithLogger.logger.info("read message file: " + path);
 
-        ObjectMapper objectMapper = new ObjectMapper()
-                .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-
         try {
-            for (Message message : objectMapper.readValue(path.toFile(), Message[].class))
-                onMessage(message);
+             String json = Files.lines(path, StandardCharsets.UTF_8)
+                .collect(Collectors.joining("\n"));
+            JsonElement jsonElement = JsonParser.parseString(json);
+            
+            if (jsonElement.isJsonArray()) {
+                JsonArray jsonArray = jsonElement.getAsJsonArray();
+                for (JsonElement element : jsonArray) {
+                    if (element.isJsonObject()) {
+                        Gson gson = new GsonBuilder().registerTypeAdapter(Message.class, new MessageDeserializer()).create();
+                        Message message = gson.fromJson(element, Message.class);
+                        onMessage(message);
+                    }
+                }
+            }
 
             Files.delete(path);
         } catch (IOException e) {

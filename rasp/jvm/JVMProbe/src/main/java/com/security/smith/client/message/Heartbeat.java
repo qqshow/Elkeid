@@ -1,11 +1,28 @@
 package com.security.smith.client.message;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 public class Heartbeat {
     private String filter;
     private String block;
     private String limit;
     private String patch;
     private String class_filter_version;
+    private String switches;
+    private int discard_count;
+
+    public Heartbeat() {
+        filter = "";
+        block = "";
+        limit = "";
+        patch = "";
+        class_filter_version = "";
+        switches = "";
+        discard_count = 0;
+    }
 
     public String getFilter() {
         return filter;
@@ -45,5 +62,48 @@ public class Heartbeat {
 
     public void setClassFilterVersion(String classFilterVersion) {
         this.class_filter_version = classFilterVersion;
+    }
+
+    public String getSwicthes() {
+        return switches;
+    }
+
+    public void setSwitches(String switches) {
+        this.switches = switches;
+    }
+
+    public synchronized int  getDiscardCount() {
+        return discard_count;
+    }
+
+    public synchronized void setDiscardCount(int discard_count) {
+        this.discard_count = discard_count;
+    }
+
+    public static Heartbeat fromJson(String json) {
+        Gson gson = new Gson();
+        return gson.fromJson(json, Heartbeat.class);
+    }
+
+    public String toJson() {
+        Gson gson = new Gson();
+        return gson.toJson(this);
+    }
+
+    public static Heartbeat fromJsonObject(JsonObject jsonObject) {
+        Gson gson = new Gson();
+        return gson.fromJson(jsonObject, Heartbeat.class);
+    }
+
+    public JsonObject toJsonObject() {
+        Gson gson = new Gson();
+        JsonElement jsonElement = gson.toJsonTree(this);
+        return jsonElement.getAsJsonObject();
+    }
+
+    public JsonElement toJsonElement() {
+        Gson gson = new Gson();
+        JsonElement jsonElement = gson.toJsonTree(this);
+        return jsonElement;
     }
 }

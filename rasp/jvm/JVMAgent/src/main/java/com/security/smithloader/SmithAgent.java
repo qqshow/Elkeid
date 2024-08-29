@@ -1,12 +1,7 @@
 package com.security.smithloader;
 
-import java.util.jar.Attributes;
-import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 
-import javax.management.openmbean.CompositeDataInvocationHandler;
-
-import com.security.smithloader.MemCheck;
 import com.security.smithloader.common.JarUtil;
 import com.security.smithloader.common.ParseParameter;
 import com.security.smithloader.common.Reflection;
@@ -14,10 +9,6 @@ import com.security.smithloader.log.SmithAgentLogger;
 
 import java.lang.instrument.Instrumentation;
 import java.lang.reflect.Constructor;
-import java.lang.reflect.Method;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.locks.ReentrantLock;
@@ -30,10 +21,16 @@ public class SmithAgent {
     private static Object           SmithProberProxyObj = null;
     private static long             jvmHeapFree = 150;
     private static long             jvmMetaFree = 20;
-    private static String probeVersion;
-    private static String checksumStr;
-    private static String proberPath;
+    private static String probeVersion = null;
+    private static String checksumStr = null;
+    private static String proberPath = null;
     private static Instrumentation instrumentation = null;
+    public static InheritableThreadLocal<Boolean> checkRecursive = new InheritableThreadLocal<Boolean>() {
+        @Override
+        protected Boolean initialValue() {
+            return false;
+        }
+    };
 
     public static Object getClassLoader() {
         return xLoader;
@@ -48,44 +45,58 @@ public class SmithAgent {
     }
 
     public static void PreProxy(Object MethodNameObj,int classID, int methodID, Object[] args) {
-
+        if (checkRecursive != null && checkRecursive.get() == true) {
+            return;
+        }
+        if (checkRecursive != null && checkRecursive.get() == false) {
+            checkRecursive.set(true);
+        }
         if(SmithProberProxyObj != null) {
             String MethodName = (String)MethodNameObj;
             Class<?>[]  argType = new Class[]{int.class,int.class,Object[].class};
             Reflection.invokeMethod(SmithProberProxyObj,MethodName,argType,classID,methodID,args);
         }
-
+        if (checkRecursive != null && checkRecursive.get() == true) {
+            checkRecursive.set(false);
+        }
     }
 
     public static void PostProxy(Object MethodNameObj,int classID, int methodID, Object[] args, Object ret, boolean blocked) {
+        if (checkRecursive != null && checkRecursive.get() == true) {
+            return;
+        }
+        if (checkRecursive != null && checkRecursive.get() == false) {
+            checkRecursive.set(true);
+        }
 
         if(SmithProberProxyObj != null) {
             String MethodName = (String)MethodNameObj;
             Class<?>[]  argType = new Class[]{int.class,int.class,Object[].class,Object.class,boolean.class};
             Reflection.invokeMethod(SmithProberProxyObj,MethodName,argType,classID,methodID,args,ret,blocked);
         }
+        if (checkRecursive != null && checkRecursive.get() == true) {
+            checkRecursive.set(false);
+        }
     }
 
     public static Object ExceptionProxy(Object MethodNameObj,int classID, int methodID, Object[] args,Object exceptionObject) throws Throwable {
-
+        if (checkRecursive != null && checkRecursive.get() == true) {
+            return null;
+        }
+        if (checkRecursive != null && checkRecursive.get() == false) {
+            checkRecursive.set(true);
+        }
+        Object obj = null;
         if(SmithProberProxyObj != null) {
             String MethodName = (String)MethodNameObj;
             Class<?>[]  argType = new Class[]{int.class,int.class,Object[].class,Object.class};
-            return Reflection.invokeMethod(SmithProberProxyObj,MethodName,argType,classID,methodID,args,exceptionObject);
+            obj = Reflection.invokeMethod(SmithProberProxyObj,MethodName,argType,classID,methodID,args,exceptionObject);
         }
 
-        return null;
-    }
-
-    public static Object PassProxyToProbe(Object Obj,Object MethodNameObj,int functionID, Object[] args) {
-
-          if(Obj != null) {
-            String MethodName = (String)MethodNameObj;
-            Class<?>[]  argType = new Class[]{int.class,int.class,Object[].class};
-            return Reflection.invokeMethod(Obj,MethodName,argType,functionID,args);
+        if (checkRecursive != null && checkRecursive.get() == true) {
+            checkRecursive.set(false);
         }
-
-        return null;
+        return obj;
     }
 
     private static boolean loadSmithProber(String proberPath, Instrumentation inst) {
@@ -104,8 +115,7 @@ public class SmithAgent {
             Class<?>[]  loadclassargType = new Class[]{String.class};
             SmithProberClazz = (Class<?>)Reflection.invokeMethod(xLoader,"loadClass", loadclassargType,smithProbeClassName);
 
-            SmithAgentLogger.logger.info("SmithProbe ClassLoader:"+SmithProberClazz.getClassLoader());
-
+            SmithAgentLogger.logger.info("SmithProbe classloader:"+SmithProberClazz.getClassLoader());
             Class<?>[] emptyArgTypes = new Class[]{};
             if (SmithProberClazz != null) {
                 Constructor<?> constructor = SmithProberClazz.getDeclaredConstructor();
@@ -220,7 +230,7 @@ public class SmithAgent {
         public String call() throws Exception {
              xLoaderLock.lock();
                 try {
-                    if(xLoader != null) {
+                    if(SmithProberObj != null) {
                         String agent = System.getProperty("rasp.probe");
 
                         if(unLoadSmithProber()) {
@@ -244,9 +254,8 @@ public class SmithAgent {
                             SmithAgentLogger.logger.warning(proberPath + " loading fail!");
                         }
                         else {
-                            System.setProperty("smith.status", "attach");
                             System.setProperty("smith.rasp", probeVersion+"-"+checksumStr);
-                            
+                            System.setProperty("smith.status", "attach");
                             System.setProperty("rasp.probe", "smith");
                         }
                     }

@@ -216,13 +216,14 @@ static spinlock_t g_delayed_put_lock;
 static struct delayed_put_node *smith_deref_head_node(void)
 {
     struct delayed_put_node *dnod;
+    unsigned long flags;
 
     /* retrive head node from delayed put queue */
-    spin_lock(&g_delayed_put_lock);
+    spin_lock_irqsave(&g_delayed_put_lock, flags);
     dnod = g_delayed_put_queue;
     if (dnod)
         g_delayed_put_queue = dnod->next;
-    spin_unlock(&g_delayed_put_lock);
+    spin_unlock_irqrestore(&g_delayed_put_lock, flags);
 
     /* do actual put_files_struct or fput */
     if (dnod) {
@@ -294,15 +295,17 @@ static void smith_stop_delayed_put(void)
 
 static void smith_insert_delayed_put_node(struct delayed_put_node *dnod)
 {
+    unsigned long flags;
+
     if (!dnod)
         return;
 
     atomic_inc(&g_delayed_put_active);
     /* attach dnod to deayed_fput_queue */
-    spin_lock(&g_delayed_put_lock);
+    spin_lock_irqsave(&g_delayed_put_lock, flags);
     dnod->next = g_delayed_put_queue;
     g_delayed_put_queue = dnod;
-    spin_unlock(&g_delayed_put_lock);
+    spin_unlock_irqrestore(&g_delayed_put_lock, flags);
     wake_up_process(g_delayed_put_thread);
 }
 
@@ -369,10 +372,10 @@ static struct files_struct *smith_get_files_struct(struct task_struct *task)
     return files;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
-#define smith_lookup_fd          files_lookup_fd_raw
+#ifdef SMITH_HAVE_FCHECK_FILES
+#define smith_lookup_fd          fcheck_files /* < 5.10.220 */
 #else
-#define smith_lookup_fd          fcheck_files
+#define smith_lookup_fd          files_lookup_fd_raw /* >= 5.10.220 */
 #endif
 
 static struct file *smith_fget_raw(unsigned int fd)
@@ -420,10 +423,19 @@ static char *smith_d_path(const struct path *path, char *buf, int buflen)
  * there could be races on mm->exe_file, but we could assure we can always
  * get a valid filp or NULL
  */
-static struct file *smith_get_task_exe_file(struct task_struct *task)
+static struct file *smith_get_current_exe_file(void)
 {
     struct file *exe = NULL;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
+    /*
+     * 1) performance improvement for kernels >=4.1: use get_mm_exe_file instead
+     *    get_mm_exe_file internally uses rcu lock (with semaphore locks killed)
+     * 2) it's safe to directly access current->mm under current's own context
+     * 3) get_mm_exe_file() is no longer exported after kernel 5.15
+     */
+    exe = get_mm_exe_file(current->mm);
+#else
     /*
      * get_task_mm/mmput must be avoided here
      *
@@ -431,13 +443,14 @@ static struct file *smith_get_task_exe_file(struct task_struct *task)
      * use mmput_async instead, but it's only available for after 4.7.0
      * (and CONFIG_MMU is enabled)
      */
-    task_lock(task);
-    if (task->mm && task->mm->exe_file) {
-        exe = task->mm->exe_file;
+    task_lock(current);
+    if (current->mm && current->mm->exe_file) {
+        exe = current->mm->exe_file;
         if (!smith_get_file(exe))
             exe = NULL;
     }
-    task_unlock(task);
+    task_unlock(current);
+#endif
 
     return exe;
 }
@@ -451,17 +464,7 @@ static char *smith_get_exe_file(char *buffer, int size)
     if (!buffer || !current->mm)
         return exe_file_str;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
-    /*
-     * 1) performance improvement for kernels >=4.1: use get_mm_exe_file instead
-     *    get_mm_exe_file internally uses rcu lock (with semaphore locks killed)
-     * 2) it's safe to directly access current->mm under current's own context
-     * 3) get_mm_exe_file() is no longer exported after kernel 5.15
-     */
-    exe = get_mm_exe_file(current->mm);
-#else
-    exe = smith_get_task_exe_file(current);
-#endif
+    exe = smith_get_current_exe_file();
     if (exe) {
         exe_file_str = smith_d_path(&exe->f_path, buffer, size);
         fput(exe);
@@ -515,7 +518,10 @@ static int __init kernel_symbols_init(void)
 {
     void *ptr;
 
+    /* sized_strscpy introduced from v6.9 to replace strscpy */
     ptr = (void *)smith_kallsyms_lookup_name("strscpy");
+    if (!ptr)
+        ptr = (void *)smith_kallsyms_lookup_name("sized_strscpy");
     if (!ptr)
         ptr = (void *)smith_kallsyms_lookup_name("strlcpy");
     if (!ptr)
@@ -1594,7 +1600,7 @@ static void get_execve_data(struct user_arg_ptr argv_ptr,
 			if (offset > 0)
 				*(argv_res + offset) = '\0';
 			else
-				strcpy(argv_res, "<FAIL>");
+				smith_strcpy(argv_res, "<FAIL>");
 			smith_strim(argv_res);
 		}
 	}
@@ -1628,14 +1634,14 @@ static void get_execve_data(struct user_arg_ptr argv_ptr,
 					if (strncmp("SSH_CONNECTION=", buf, 11) == 0) {
 					    ssh_connection_flag = 1;
 						if (free_ssh_connection == 1) {
-							strcpy(ssh_connection, buf + 15);
+							smith_strcpy(ssh_connection, buf + 15);
 						} else {
 							ssh_connection = "-1";
 						}
 					} else if (strncmp("LD_PRELOAD=", buf, 11) == 0) {
 					    ld_preload_flag = 1;
 						if (free_ld_preload == 1) {
-							strcpy(ld_preload, buf + 11);
+							smith_strcpy(ld_preload, buf + 11);
 						} else {
 							ld_preload = "-1";
 						}
@@ -1649,7 +1655,7 @@ static void get_execve_data(struct user_arg_ptr argv_ptr,
 		if (free_ssh_connection == 0)
 			ssh_connection = "-1";
 		else
-			strcpy(ssh_connection, "-1");
+			smith_strcpy(ssh_connection, "-1");
 	}
 	data->ssh_connection = ssh_connection;
 	data->free_ssh_connection = free_ssh_connection;
@@ -1658,7 +1664,7 @@ static void get_execve_data(struct user_arg_ptr argv_ptr,
 		if (free_ld_preload == 0)
 			ld_preload = "-1";
 		else
-			strcpy(ld_preload, "-1");
+			smith_strcpy(ld_preload, "-1");
 	}
 	data->ld_preload = ld_preload;
 	data->free_ld_preload = free_ld_preload;
@@ -1690,7 +1696,10 @@ static int compat_execve_entry_handler(
 	get_execve_data(argv_ptr, env_ptr, data);
 	return 0;
 }
+#endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0)
+#ifdef CONFIG_COMPAT
 static int compat_execveat_entry_handler(
                 struct kretprobe_instance *ri,
 				struct pt_regs *regs)
@@ -1730,6 +1739,7 @@ static int execveat_entry_handler(struct kretprobe_instance *ri, struct pt_regs 
 	get_execve_data(argv_ptr, env_ptr, data);
 	return 0;
 }
+#endif
 
 static int execve_entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
@@ -1818,7 +1828,7 @@ static void get_execve_data(char **argv, char **env, struct execve_data *data)
             if (offset > 0)
                 *(argv_res + offset) = '\0';
             else
-                strcpy(argv_res, "<FAIL>");
+                smith_strcpy(argv_res, "<FAIL>");
             smith_strim(argv_res);
         }
     }
@@ -1854,14 +1864,14 @@ static void get_execve_data(char **argv, char **env, struct execve_data *data)
                     if (strncmp("SSH_CONNECTION=", buf, 11) == 0) {
                         ssh_connection_flag = 1;
                         if (free_ssh_connection == 1) {
-                            strcpy(ssh_connection, buf + 15);
+                            smith_strcpy(ssh_connection, buf + 15);
                         } else {
                             ssh_connection = "-1";
                         }
                     } else if (strncmp("LD_PRELOAD=", buf, 11) == 0) {
                         ld_preload_flag = 1;
                         if (free_ld_preload == 1) {
-                            strcpy(ld_preload, buf + 11);
+                            smith_strcpy(ld_preload, buf + 11);
                         } else {
                             ld_preload = "-1";
                         }
@@ -1875,7 +1885,7 @@ static void get_execve_data(char **argv, char **env, struct execve_data *data)
         if (free_ssh_connection == 0)
             ssh_connection = "-1";
         else
-            strcpy(ssh_connection, "-1");
+            smith_strcpy(ssh_connection, "-1");
     }
     data->ssh_connection = ssh_connection;
     data->free_ssh_connection = free_ssh_connection;
@@ -1884,7 +1894,7 @@ static void get_execve_data(char **argv, char **env, struct execve_data *data)
         if (free_ld_preload == 0)
             ld_preload = "-1";
         else
-            strcpy(ld_preload, "-1");
+            smith_strcpy(ld_preload, "-1");
     }
     data->ld_preload = ld_preload;
     data->free_ld_preload = free_ld_preload;
@@ -5021,7 +5031,7 @@ static void __init install_kprobe(void)
     module_param(sid_##name, charp, S_IRUSR|S_IRGRP|S_IROTH)
 
 /* latest commit id */
-static char *smith_srcid = SMITH_SRCID(05c8e8cf352ee91fd3dcd89354fec3cc8fa3129c);
+static char *smith_srcid = SMITH_SRCID(6b3b480a0c12ef8c24cb3417a109d2082b72cfd9);
 
 static int __init kprobe_hook_init(void)
 {

@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
 use std::path::PathBuf;
-
 use anyhow::{anyhow, Result};
 use log::*;
 use serde_json;
-
+use std::fs;
+use std::path::Path;
 use crate::cpython;
-use crate::golang::golang_bin_inspect;
+use crate::golang::{golang_bin_inspect, golang_version};
 use crate::jvm::vm_version;
 use crate::nodejs::nodejs_version;
 use crate::php::{inspect_phpfpm, inspect_phpfpm_version, inspect_phpfpm_zts};
@@ -54,6 +54,35 @@ pub trait ProbeCopy {
 }
 
 pub trait RuntimeInspect {
+    fn check_jvm_attach_mechanism(pid: i32) -> Result<bool, std::io::Error> {
+        let cmdline = fs::read_to_string(format!("/proc/{}/cmdline", pid))?;
+        Ok(cmdline.contains("+DisableAttachMechanism"))
+    }
+    
+    fn check_signal_dispatch(pid: i32) -> Result<bool, std::io::Error> {
+        let task_dir = format!("/proc/{}/task", pid);
+        for entry in fs::read_dir(&task_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+    
+            let comm_file = format!("{}/comm", entry.path().display());
+            //info!("pid {},comm file : {}", pid, comm_file);
+            if !Path::new(&comm_file).exists() {
+                continue; // Skip if 'comm' file doesn't exist
+            }
+    
+            let comm = fs::read_to_string(comm_file)?;
+            //info!("pid {}, comm: {}", pid, comm);
+            if comm.contains("Signal Dispatch") || comm.contains("Attach Listener") {
+                return Ok(true);
+            }
+        }
+    
+        Ok(false)
+    }
+
     fn inspect_from_process_info(process_info: &mut ProcessInfo) -> Result<Option<Runtime>> {
         let process_exe_file = process_info.exe_name.clone().unwrap();
         debug!("runtime inspect: exe file: {}", process_exe_file);
@@ -72,25 +101,45 @@ pub trait RuntimeInspect {
             };
         
         if  jvm_process_filter_check_reuslt {
-            let version = match vm_version(process_info.pid) {
-                Ok(ver) => {
-                    if ver < 8 {
-                        warn!("process {} Java version lower than 8: {}, so not inject", process_info.pid, ver);
-                        let msg = format!("Java version lower than 8: {}, so not inject", ver);
+            match Self::check_jvm_attach_mechanism(process_info.pid) {
+                Ok(v) => {
+                    if v == true {
+                        let msg = format!("npid: {}, set DisableAttachMechanism, so can not attach", process_info.pid);
+                        info!("pid: {}, set DisableAttachMechanism, so can not attach", process_info.pid);
                         return Err(anyhow!(msg));
                     }
-                    ver.to_string()
                 }
-                Err(e) => {
-                    warn!("read jvm version failed: {}", e);
-                    String::new()
+                Err(e) => info!("Failed to check '+DisableAttachMechanism': {}", e),
+            }
+            
+            match Self::check_signal_dispatch(process_info.pid) {
+                Ok(v) => {
+                    if v == true {
+                        let version = match vm_version(process_info.pid) {
+                            Ok(ver) => {
+                                ver.to_string()
+                            }
+                            Err(e) => {
+                                warn!("read jvm version failed: {}", e);
+                                String::new()
+                            }
+                        };
+                        return Ok(Some(Runtime {
+                            name: "JVM",
+                            version: version,
+                            size: 0,
+                        }));
+                    } else {
+                        warn!("pid: {} not found Signal Dispatcher, so not report version", process_info.pid);
+                        return Ok(Some(Runtime {
+                            name: "JVM",
+                            version: String::new(),
+                            size: 0,
+                        }));
+                    }
                 }
-            };
-            return Ok(Some(Runtime {
-                name: "JVM",
-                version: version,
-                size: 0,
-            }));
+                Err(e) => info!("pid: {}, Failed to check 'Signal Dispatcher': {}", process_info.pid, e),
+            }
         }
         let cpython_process_filter: RuntimeFilter =
             match serde_json::from_str(DEFAULT_CPYTHON_FILTER_JSON_STR) {
@@ -127,17 +176,7 @@ pub trait RuntimeInspect {
             };
         if nodejs_process_filter_check_reuslt {
             let version = match nodejs_version(process_info.pid, &process_exe_file) {
-                Ok((major, minor, v)) => {
-                    if major < 8 {
-                        let msg = format!("nodejs version lower than 8.6: {}", v);
-                        return Err(anyhow!(msg));
-                    }
-                    if major == 8 {
-                        if minor < 6 {
-                            let msg = format!("nodejs version lower than 8.6: {}", v);
-                            return Err(anyhow!(msg));
-                        }
-                    }
+                Ok((_, _, v)) => {
                     v
                 }
                 Err(e) => {
@@ -166,12 +205,21 @@ pub trait RuntimeInspect {
                 path.push(p);
             }
         }
-        match golang_bin_inspect(path) {
+        match golang_bin_inspect(&path) {
             Ok(res) => {
                 if res > 0 {
+                    let version = match golang_version(&path) {
+                        Ok(v) => {
+                            v
+                        }
+                        Err(e) => {
+                            warn!("read golang elf version failed: {}", e);
+                            String::new()
+                        }
+                    };
                     return Ok(Some(Runtime {
                         name: "Golang",
-                        version: String::new(),
+                        version: version,
                         size: res,
                     }));
                 }

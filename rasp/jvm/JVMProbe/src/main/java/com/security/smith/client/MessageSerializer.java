@@ -1,51 +1,66 @@
 package com.security.smith.client;
 
-import com.fasterxml.jackson.databind.ser.std.StdSerializer;
-import com.fasterxml.jackson.databind.SerializerProvider;
-import com.fasterxml.jackson.core.JsonGenerator;
-import java.lang.management.ManagementFactory;
-import java.io.IOException;
-import java.time.Instant;
+import java.lang.reflect.Type;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonSerializationContext;
+import com.google.gson.JsonSerializer;
+
 import com.security.smith.common.ProcessHelper;
 
-public class MessageSerializer extends StdSerializer<Message> {
+import java.lang.management.ManagementFactory;
+import java.time.Instant;
+
+
+public class MessageSerializer implements  JsonSerializer<Message> {
     static private int pid;
-    static private String jvmVersion;
-    static private String probeVersion;
+    static private String jvmVersion = "";
+    static private String probeVersion = "";
 
     public static void initInstance(String probeVer) {
         pid = ProcessHelper.getCurrentPID();
         jvmVersion = ManagementFactory.getRuntimeMXBean().getSpecVersion();
         probeVersion = probeVer;
+        if(probeVersion == null) {
+            probeVersion = "";
+        }
     }
 
     public static void delInstance() {
-        probeVersion = null;
-        jvmVersion = null;
-        pid = 0;
+        jvmVersion = "";
+        probeVersion = "";
     }
 
-    protected MessageSerializer() {
-        super(Message.class);
-    }
+    public static void initInstance() {
+        pid = ProcessHelper.getCurrentPID();
+        jvmVersion = ManagementFactory.getRuntimeMXBean().getSpecVersion();
+        if(jvmVersion == null) {
+            jvmVersion = "";
+        }
 
-    protected MessageSerializer(Class<Message> t) {
-        super(t);
+        probeVersion = MessageSerializer.class.getPackage().getImplementationVersion();
+        if(probeVersion == null) {
+            probeVersion = "";
+        }
     }
 
     @Override
-    public void serialize(Message value, JsonGenerator gen, SerializerProvider provider) throws IOException {
-        gen.writeStartObject();
-        gen.writeNumberField("message_type", value.getOperate());
-
-        gen.writeNumberField("pid", pid);
-        gen.writeStringField("runtime", "JVM");
-        gen.writeStringField("runtime_version", jvmVersion);
-        gen.writeStringField("probe_version", probeVersion);
-        gen.writeNumberField("time", Instant.now().getEpochSecond());
-
-        gen.writeObjectField("data", value.getData());
-
-        gen.writeEndObject();
+    public JsonElement serialize(Message message, Type typeOfSrc, JsonSerializationContext context) {
+        JsonObject obj = new JsonObject();
+        obj.addProperty("message_type", message.getOperate());
+        obj.add("data", context.serialize(message.getData()));
+        obj.addProperty("pid", pid);
+        obj.addProperty("runtime", "JVM");
+        obj.addProperty("runtime_version", jvmVersion);
+        if(probeVersion != null) {
+            obj.addProperty("probe_version", probeVersion);
+        }
+        else {
+            obj.addProperty("probe_version", "");
+        }
+        obj.addProperty("time", Instant.now().getEpochSecond());
+        return obj;
     }
 }

@@ -15,6 +15,7 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.Base64;
 
 import com.security.smith.client.message.ClassFilter;
 import com.security.smith.client.message.ClassUpload;
@@ -23,6 +24,9 @@ import com.security.smith.log.SmithLogger;
 
 import java.lang.instrument.IllegalClassFormatException;
 import java.lang.management.ManagementFactory;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 
 public class ClassUploadTransformer implements ClassFileTransformer,Runnable {
     private static ClassUploadTransformer ourInstance = new ClassUploadTransformer();
@@ -113,7 +117,7 @@ public class ClassUploadTransformer implements ClassFileTransformer,Runnable {
                 try {
                     this.clazzToUpload = info.clazz;
                     this.transId = info.transId;
-    
+                    
                     if (inst.isModifiableClass(info.clazz) && !info.clazz.getName().startsWith("java.lang.invoke.LambdaForm")) {
                         try {
                             inst.retransformClasses(info.clazz);
@@ -246,7 +250,7 @@ public class ClassUploadTransformer implements ClassFileTransformer,Runnable {
         return !started;
     }
 
-    private boolean classIsSended(int hashcode) {
+    public boolean classIsSended(int hashcode) {
         boolean isSended = false;
         classHashCachelock.readLock().lock();
         try {
@@ -319,25 +323,18 @@ public class ClassUploadTransformer implements ClassFileTransformer,Runnable {
     }
 
     public  boolean sendClass(Class<?> clazz, String transId) {
-        boolean ret = false;
-
         if(!started) {
             return false;
         }
 
         try {
-            if(!classIsSended(clazz.hashCode())) {
-                ret = addUploadClassInfo(clazz,transId);
-            }
-            else {
-                ret = true;
-            }
+            return addUploadClassInfo(clazz,transId);
         }
         catch(Exception e) {
             SmithLogger.exception(e);
         }
 
-        return ret;
+        return false;
     }
 
     @Override
@@ -370,10 +367,14 @@ public class ClassUploadTransformer implements ClassFileTransformer,Runnable {
 
                 classUpload.setByteTotalLength(length);
                 classUpload.setByteLength(length);
-                classUpload.setClassData(data);
+                Base64.Encoder encoder = Base64.getEncoder();
+                String dataStr = encoder.encodeToString(data);
+                classUpload.setClassData(dataStr);
 
                 if (client != null) {
-                    client.write(Operate.CLASSUPLOAD, classUpload);
+                    Gson gson = new Gson();
+                    JsonElement jsonElement = gson.toJsonTree(classUpload);
+                    client.write(Operate.CLASSUPLOAD, jsonElement);
                     SmithLogger.logger.info("send classdata: " + classUpload.toString());
                 }
             }

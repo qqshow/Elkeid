@@ -4,7 +4,6 @@ use std::{
     thread::{sleep, Builder},
     time::Duration,
 };
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
@@ -64,10 +63,11 @@ pub fn rasp_monitor_start(client: Client) -> Anyhow<()> {
                         info!("collect thread: {} internal message len: {}", collect_thread_n, message_queue_length)
                     }
                     let bundle: Vec<Record> = internal_message_receiver_clone.try_iter().collect();
+                    let queue_length: u64 = message_queue_length as u64;
                     debug!("sending bundle: {:?}", bundle);
-                    match client_clone.send_records(&bundle) {
+                    match client_clone.send_records_high_priority(&bundle) {
                         Ok(_) => {
-                            total_messages_clone.fetch_add(1, Ordering::SeqCst);
+                            total_messages_clone.fetch_add(queue_length, Ordering::SeqCst);
                         }
                         Err(e) => {
                             error!("can not send data to agent, stop the world: {}", e);
@@ -130,7 +130,6 @@ pub fn rasp_monitor_start(client: Client) -> Anyhow<()> {
                             error!("recv failed from external client, {}, now to stop process", e);
                             info!("Elkeid RASP STOP");
                             std::process::exit(0);
-                            //return Err(anyhow!("recv failed client failed: {}", e));
                         }
                     };
                     let parsed_message = match parse_message(&message) {
@@ -216,7 +215,6 @@ pub fn rasp_monitor_start(client: Client) -> Anyhow<()> {
         }
         sleep(Duration::from_secs(10));
     }
-    Ok(())
 }
 
 fn internal_main(
@@ -253,8 +251,8 @@ fn internal_main(
             }
             for pid in pids.iter() {
                 debug!("send pid: {}", pid);
-                if let Err(_) = pid_sender.send(*pid) {
-                    error!("can not send pid to pid_sender channel, quiting");
+                if let Err(e) = pid_sender.send(*pid) {
+                    error!("can not send pid to pid_sender channel, quiting, err: {}", e);
                     let _ = pid_recv_ctrl.stop();
                     break;
                 };
@@ -474,18 +472,24 @@ fn internal_main(
                 }
                 Err(e) => {
                     warn!("operation failed: {:?} {}", operation_message, e);
-                    let report = make_report(
-                        &process.clone(),
-                        format!("{}_failed", state.clone()).as_str(),
-                        e.to_string(),
-                    );
-                    let mut record = hashmap_to_record(report);
-                    record.data_type = report_action_data_type.clone() as i32;
-                    record.timestamp = time();
-                    if let Err(e) = operation_reporter.send(
-                        record
-                    ) {
-                        warn!("operation thread send command to receiver err: {}, pid: {}", e, process.pid);
+                    if state != "ATTACHED" {
+                        let report = make_report(
+                            &process.clone(),
+                            format!("{}_failed", state.clone()).as_str(),
+                            e.to_string(),
+                        );
+                        let mut record = hashmap_to_record(report);
+                        record.data_type = report_action_data_type.clone() as i32;
+                        record.timestamp = time();
+                        if let Err(e) = operation_reporter.send(
+                            record
+                        ) {
+                            warn!("operation thread send command to receiver err: {}, pid: {}", e, process.pid);
+                        }
+                        let _ = process.update_failed_reason(&e.to_string());
+                        let mut opp = operation_process_rw.write();
+                        opp.insert(process.pid, process.clone());
+                        drop(opp);
                     }
                     continue;
                 }
@@ -502,6 +506,7 @@ fn internal_main(
                     } else {
                         String::new()
                     };
+                    let _ = process.update_failed_reason(&String::new());
                     process.current_config_hash = probe_config_hash;
                     (*opp).insert(process.pid, process);
                 }
@@ -531,5 +536,4 @@ fn internal_main(
         }
         sleep(Duration::from_secs(10));
     }
-    Ok(())
 }

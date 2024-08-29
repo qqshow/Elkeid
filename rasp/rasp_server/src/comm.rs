@@ -106,7 +106,6 @@ pub async fn start_bind(sock: RASPSock) -> Result<(), String> {
                 sleep(Duration::from_secs(60 * 60)).await;
             } else {
                 error!("RASP ERROR: SOCK has been deleted");
-
                 match clean_bind_addr(&sock.server_addr.clone()) {
                     Ok(()) => {
                         info!("bind: {}", &sock.server_addr.clone());
@@ -115,7 +114,7 @@ pub async fn start_bind(sock: RASPSock) -> Result<(), String> {
                         error!("clean bind path err: {:?}", err);
                     },
                 }
-                listen(&sock.server_addr.clone());
+                let _ = listen(&sock.server_addr.clone());
             }
         }
     });
@@ -285,9 +284,9 @@ pub async fn looping(
                         }
                     }
                     None => {
-                        log::warn!("tx recv ctrl stop");
+                        log::warn!("tx recv ctrl stop, pid: {}", pid);
                         let _ = tx_ctrl.stop();
-                        drop(framed_rx.get_mut());
+                        //drop(framed_rx.get_mut());
                         return
                     }
 

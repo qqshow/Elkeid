@@ -1,7 +1,7 @@
 package com.security.smith;
                            
-import java.lang.reflect.Field;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicIntegerArray;
@@ -17,6 +17,7 @@ import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.security.smith.client.Client;
 import com.security.smith.client.Operate;
+import com.security.smith.client.message.*;
 import com.security.smith.client.message.ClassFilter;
 import com.security.smith.client.message.Heartbeat;
 import com.security.smith.client.message.MatchRule;
@@ -26,8 +27,11 @@ import com.security.smith.common.Reflection;
 import com.security.smith.common.SmithHandler;
 import com.security.smith.log.SmithLogger;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.GsonBuilder;
 public class SmithProbeProxy {
-    private final int CLASS_MAX_ID = 30;
+    private final int CLASS_MAX_ID = 50;
     private final int METHOD_MAX_ID = 20;
     private final int DEFAULT_QUOTA = 12000;
     
@@ -36,6 +40,8 @@ public class SmithProbeProxy {
     private Disruptor<Trace> disruptor;
     private Client client;
     private boolean stopX;
+    private Map<String, String[]> reflectField = new HashMap<>();
+    private Map<String, String[]> reflectMethod = new HashMap<>();
 
     public InheritableThreadLocal<Object> localfilterConfig = new InheritableThreadLocal<Object>() {
         @Override
@@ -120,7 +126,6 @@ public class SmithProbeProxy {
 
     public SmithProbeProxy() {
         stopX = false;
-        //quotas = Stream.generate(() -> new AtomicIntegerArray(METHOD_MAX_ID)).limit(CLASS_MAX_ID).toArray(AtomicIntegerArray[]::new);
 
         quotas = new AtomicIntegerArray[CLASS_MAX_ID];
         for (int i = 0; i < CLASS_MAX_ID; i++) {
@@ -137,6 +142,12 @@ public class SmithProbeProxy {
         this.quotas = null;
         this.SmithProbeObj = null;
         RemoveThreadLocalVar();
+
+        reflectField.clear();
+        reflectField = null;
+
+        reflectMethod.clear();
+        reflectMethod = null;
 
         localfilterConfig = null; 
         localfilterDef = null;
@@ -156,8 +167,114 @@ public class SmithProbeProxy {
         this.disruptor = disruptor;
     }
 
+    public void setReflectField() {
+        String[] values1 = {"theUnsafe", "unsafe", "fieldFilterMap", "methodFilterMap"};
+        String[] values2 = {"launchMechanism"};
+        String[] values3 = {"handlerMap", "adaptedInterceptors"};
+        String[] values4 = {"context"};
+        String[] values5 = {"delegate"};
+        String[] values6 = {"handlerAdapters", "handlerMappings"};
+        String[] values7 = {"chain"};
+        String[] values8 = {"httpUpgradeProtocols"};
+        String[] values9 = {"executor"};
+        String[] values10 = {"connector"};
+
+        reflectField.put("*", values1);
+        reflectField.put("java.lang.UNIXProcess", values2);
+        reflectField.put("java.lang.ProcessImpl", values2);
+        reflectField.put("org.springframework.web.servlet.handler.AbstractUrlHandlerMapping", values3);
+        reflectField.put("org.apache.catalina.core.ApplicationContext", values4);
+        reflectField.put("org.springframework.context.ApplicationListener", values5);
+        reflectField.put("org.springframework.web.servlet.DispatcherServlet", values6);
+        reflectField.put("org.springframework.web.server.handler.FilteringWebHandler", values7);
+        reflectField.put("org.apache.coyote.http11.AbstractHttp11Protocol", values8);
+        reflectField.put("org.apache.tomcat.util.net.AbstractEndpoint", values9);
+        reflectField.put("org.apache.catalina.connector.CoyoteAdapter", values10);
+    }
+
+    public void setReflectMethod() {
+
+        String[] values1 = {"*"};
+        String[] values2 = {"load"};
+        String[] values3 = {"forkAndExec"};
+        String[] values4 = {"create"};
+        String[] values5 = {"defineClass"};
+        reflectMethod.put("java.lang.Unsafe", values1);
+        reflectMethod.put("java.lang.ClassLoader$NativeLibrary", values2);
+        reflectMethod.put("java.lang.UNIXProcess", values3);
+        reflectMethod.put("java.lang.ProcessImpl", values4);
+        reflectMethod.put("java.lang.ClassLoader", values5);
+    }
+
+    public Map<String, String[]> getReflectMethod()  {
+        return this.reflectMethod;
+    }
+
+    public Map<String, String[]> getReflectField() {
+        return this.reflectField;
+    }
+
+    public boolean checkReflectFeildEvil(String classname, String fieldname) {
+        if (classname == null || fieldname == null) {
+            return false;
+        }
+        Map<String, String[]> refieldMap = getReflectField();
+        if (refieldMap == null) {
+            return false;
+        }
+        if (refieldMap.containsKey(classname)) {
+            String[] values = refieldMap.get(classname);
+            for (String value : values) {
+                if (value.equals(fieldname) || value.equals("*")) {
+                    return true;
+                }
+            }
+        } else {
+            String[] values = refieldMap.get("*");
+            if (values == null) {
+                return false;
+            }
+            for (String value : values) {
+                if (value.equals(fieldname) || value.equals("*")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+
+    public boolean checkReflectMethodEvil(String classname, String methodname) {
+        if (classname == null || methodname == null) {
+            return false;
+        }
+        Map<String, String[]> refieldMap = getReflectMethod();
+        if (refieldMap == null) {
+            return false;
+        }
+        if (refieldMap.containsKey(classname)) {
+            String[] values = refieldMap.get(classname);
+            for (String value : values) {
+                if (value.equals(methodname) || value.equals("*")) {
+                    return true;
+                }
+            }
+        } else {
+            String[] values = refieldMap.get("*");
+            if (values == null) {
+                return false;
+            }
+            for (String value : values) {
+                if (value.equals(methodname) || value.equals("*")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     public void detect(int classID, int methodID, Object[] args) {
-        if(stopX) {
+        if(stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
 
@@ -194,20 +311,24 @@ public class SmithProbeProxy {
     }
 
     public void trace(int classID, int methodID, Object[] args, Object ret, boolean blocked) {
-        if (classID >= CLASS_MAX_ID || methodID >= METHOD_MAX_ID || stopX)
+        if (classID >= CLASS_MAX_ID || methodID >= METHOD_MAX_ID || stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false)
             return;
 
         while (true) {
             int quota = quotas[classID].get(methodID);
 
-            if (quota <= 0)
+            if (quota <= 0) {
+                SmithProbeObj.addDisacrdCount();
                 return;
+            }
 
             if (quotas[classID].compareAndSet(methodID, quota, quota - 1))
                 break;
         }
-        if (disruptor == null)
+        if (disruptor == null) {
+            SmithProbeObj.addDisacrdCount();
             return;
+        }
         RingBuffer<Trace> ringBuffer = disruptor.getRingBuffer();
 
         try {
@@ -221,44 +342,59 @@ public class SmithProbeProxy {
             trace.setRet(ret);
             trace.setArgs(args);
             trace.setStackTrace(Thread.currentThread().getStackTrace());
+            trace.setTypes(SmithProbeObj.getFuncTypes(classID, methodID));
 
             ringBuffer.publish(sequence);
         } catch (InsufficientCapacityException ignored) {
-
+            SmithProbeObj.addDisacrdCount();
         }
     }
 
-    public void sendMetadataObject(Object obj) {
+    public void sendMetadataObject(Object obj, int classID, int methodID) {
         if(stopX) {
             return;
         }
 
         if (obj != null) {
-            sendMetadataClass(obj.getClass());
+            sendMetadataClass(obj.getClass(), classID, methodID);
         }
     }
 
-    public void sendMetadataClass(Class<?> cla) {
+    public void sendMetadataClass(Class<?> cla, int classID, int methodID) {
         if (cla == null || stopX) {
             return;
         }
+
+        if(SmithProbeObj.classIsSended(cla)) {
+            return ;
+        }
+
         ClassFilter classFilter = new ClassFilter();
         SmithHandler.queryClassFilter(cla, classFilter);
         classFilter.setTransId();
         classFilter.setRuleId(-1);
+        classFilter.setClassId(classID);
+        classFilter.setMethodId(methodID);
+        classFilter.setTypes(SmithProbeObj.getFuncTypes(classID, methodID));
         classFilter.setStackTrace(Thread.currentThread().getStackTrace());
         if (client != null) {
-            client.write(Operate.SCANCLASS, classFilter);
+            Gson gson = new GsonBuilder()
+            .registerTypeAdapter(ClassFilter.class, new ClassFilterSerializer())
+            .registerTypeAdapter(ClassFilter.class, new ClassFilterDeserializer())
+            .create();
+            JsonElement jsonElement = gson.toJsonTree(classFilter);
+            client.write(Operate.SCANCLASS, jsonElement);
             SmithLogger.logger.info("send metadata: " + classFilter.toString());
             SmithProbeObj.sendClass(cla, classFilter.getTransId());
         }
     }
 
     public void checkAddServletPre(int classID, int methodID, Object[] args) {
-        if(stopX) {
+        if(stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         SmithLogger.logger.info("checkAddServlet pre_hook call success");
+
         if (args.length < 3) {
             return;
         }
@@ -272,7 +408,7 @@ public class SmithProbeProxy {
                             Class<?>[] emptyArgTypes = new Class[]{};
 
                             Object servlet = Reflection.invokeMethod(wrapper, "getServlet", emptyArgTypes);
-                            sendMetadataObject(servlet);
+                            sendMetadataObject(servlet, classID, methodID);
                         }
             }
 
@@ -309,7 +445,7 @@ public class SmithProbeProxy {
     }
 
     public void checkAddFilterPre(int classID, int methodID, Object[] args) {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         SmithLogger.logger.info("checkAddFilter pre_hook call success");
@@ -334,27 +470,14 @@ public class SmithProbeProxy {
                     }
                 }
                 if (filter != null || filterClass != null) {
-                    ClassFilter classFilter = new ClassFilter();
+                    Class<?> clazz = null;
                     if (filterClass != null) {
-                        SmithHandler.queryClassFilter(filterClass, classFilter);
+                        clazz = filterClass;
                     } else {
-                        SmithHandler.queryClassFilter(filter.getClass(), classFilter);
+                        clazz = filter.getClass();
                     }
-                    
-                    classFilter.setTransId();
-    
-                    classFilter.setRuleId(-1);
-                    classFilter.setStackTrace(Thread.currentThread().getStackTrace());
-                    if (client != null) {
-                        client.write(Operate.SCANCLASS, classFilter);
-                        SmithLogger.logger.info("send metadata: " + classFilter.toString());
-                        if (filterClass != null) {
-                            SmithProbeObj.sendClass(filterClass, classFilter.getTransId());
-                        }
-                        else {
-                            SmithProbeObj.sendClass(filter.getClass(), classFilter.getTransId());
-                        }
-                    }
+
+                    sendMetadataObject(clazz, classID, methodID);
                 } else {
                     needFoundfilterDef.set(filterdef);
                 }
@@ -364,7 +487,7 @@ public class SmithProbeProxy {
         }
     }
     public void checkFilterConfigPost(int classID, int methodID, Object[] args, Object ret, boolean blocked) {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         SmithLogger.logger.info("checkAddFilter post_hook call success");
@@ -378,7 +501,7 @@ public class SmithProbeProxy {
             // shiro filter check
             if (needFoundfilterDef != null && needFoundfilterDef.get() == args[1]) {
                 Object filter = getFilterFromConfig(ret);
-                sendMetadataObject(filter); 
+                sendMetadataObject(filter, classID, methodID); 
             }
         } catch(Exception e) {
             SmithLogger.exception(e);
@@ -386,7 +509,7 @@ public class SmithProbeProxy {
     }
 
     public void checkAddValvePre(int classID, int methodID, Object[] args) {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         if (args.length < 2) {
@@ -394,7 +517,7 @@ public class SmithProbeProxy {
         }
         try {
             Object valve = args[1];
-            sendMetadataObject(valve);
+            sendMetadataObject(valve, classID, methodID);
 
         } catch (Exception e) {
             SmithLogger.exception(e);
@@ -405,10 +528,29 @@ public class SmithProbeProxy {
         checkAddValvePre(classID, methodID, args);
     }
 
+    public void checkWebSocketPre(int classID, int methodID, Object[] args) {
+        if  (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
+            return;
+        }
+        SmithLogger.logger.info("check WebSocketPre");
+        if (args.length < 2) {
+            return;
+        }
+        try {
+            Object ws = args[1];
+            Class<?>[] emptyArgTypes = new Class[]{};
+            Class<?> endpointCla = (Class<?>)Reflection.invokeMethod(ws, "getEndpointClass", emptyArgTypes);
+            sendMetadataClass(endpointCla, classID, methodID);
+
+        } catch (Exception e) {
+            SmithLogger.exception(e);
+        }
+    }
+
     public  void onTimer() {
         Heartbeat heartbeat = SmithProbeObj.getHeartbeat();
         if (client != null)
-            client.write(Operate.HEARTBEAT, heartbeat);
+            client.write(Operate.HEARTBEAT, heartbeat.toJsonElement());
 
         Map<Pair<Integer, Integer>, Integer> limits = SmithProbeObj.getLimits();
 
@@ -426,7 +568,7 @@ public class SmithProbeProxy {
     }
 
     public void checkResinAddServletPost(int classID, int methodID, Object[] args, Object ret, boolean blocked) {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         if (args.length < 2) {
@@ -437,9 +579,9 @@ public class SmithProbeProxy {
             if (servletMapping != null) { 
                 Class<?>[] emptyArgTypes = new Class[]{};
                 Class<?> servletClass = (Class<?>)Reflection.invokeMethod(servletMapping, "getServletClass", emptyArgTypes);
-                sendMetadataClass(servletClass);
+                sendMetadataClass(servletClass, classID, methodID);
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             SmithLogger.exception(e);
         }
     }
@@ -448,7 +590,7 @@ public class SmithProbeProxy {
      * check resin servlet
      */
     public void checkResinAddServletPre(int classID, int methodID, Object[] args)  {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         if (args.length < 2) {
@@ -459,9 +601,9 @@ public class SmithProbeProxy {
             if (servletMapping != null) { 
                 Class<?>[] emptyArgTypes = new Class[]{};
                 Class<?> servletClass = (Class<?>)Reflection.invokeMethod(servletMapping, "getServletClass", emptyArgTypes);
-                sendMetadataClass(servletClass);
+                sendMetadataClass(servletClass, classID, methodID);
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             SmithLogger.exception(e);
         }
     }
@@ -470,7 +612,7 @@ public class SmithProbeProxy {
      * check resin add filter memshell
      */
     public void checkResinAddFilterPre(int classID, int methodID, Object[] args) {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         SmithLogger.logger.info("checkResinAddFilter pre_hook call success");
@@ -482,20 +624,37 @@ public class SmithProbeProxy {
             if (filterdef != null) {
                 Class<?>[] emptyArgTypes = new Class[]{};
                 Class <?> filterCla = (Class<?>)Reflection.invokeMethod(filterdef, "getFilterClass", emptyArgTypes);
-                sendMetadataClass(filterCla);
+                sendMetadataClass(filterCla, classID, methodID);
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             SmithLogger.exception(e);
         }
 
     }
 
+    public void checkResinWebSocketPre(int classID, int methodID, Object[] args) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
+            return;
+        }
+        SmithLogger.logger.info("checkResinWebSocket pre_hook call success");
+        if (args.length < 3) {
+            return;
+        }
+        try {
+            Object weblistener = args[2];
+            if (weblistener != null) {
+                sendMetadataObject(weblistener, classID, methodID);
+            }
+        } catch (Exception e) {
+            SmithLogger.exception(e);
+        }
+    }
      /*
      * check jetty version 9 add filter/servlet memshell
      * TODO: add url check
      */
     public void checkJettyMemshellPre(int classID, int methodID, Object[] args) {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         SmithLogger.logger.info("checkJettyMemshellPre pre_hook call success");
@@ -507,7 +666,7 @@ public class SmithProbeProxy {
         }
         try {
             Class<?> newclass = (Class<?>)args[1];
-            sendMetadataClass(newclass);
+            sendMetadataClass(newclass, classID, methodID);
         } catch (Exception e) {
             SmithLogger.exception(e);
         }
@@ -517,7 +676,7 @@ public class SmithProbeProxy {
      * check Jetty 9.4 Listener memshell
      */
     public void checkJettyListenerPre(int classID, int methodID, Object[] args) {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         SmithLogger.logger.info("checkJettyListenerPre pre_hook call success");
@@ -526,7 +685,7 @@ public class SmithProbeProxy {
         }
         try {
             Object listener = args[1];
-            sendMetadataObject(listener);
+            sendMetadataObject(listener, classID, methodID);
         } catch (Exception e) {
             SmithLogger.exception(e);
         }
@@ -536,7 +695,7 @@ public class SmithProbeProxy {
      * used for listener check
      */
     public void cehckJettyDeployPre(int classID, int methodID, Object[] args)  {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         if (jettyDeploying != null) {
@@ -544,11 +703,29 @@ public class SmithProbeProxy {
         }
     }
 
+    /* user for check ServerEndpointConfig init */
+    public void checkWebSocketConfigPre(int classID, int metodID, Object[] args) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, metodID) == false) {
+            return;
+        }
+        SmithLogger.logger.info("checkWebSocketConfigPre called");
+        try {
+            if (args.length < 2) {
+                return;
+            }
+            Class<?>  websocket = (Class<?>)args[0];
+            sendMetadataClass(websocket, classID, metodID);
+
+        } catch (Exception e) {
+            SmithLogger.exception(e);
+        }
+    }
+
     /*
      * used for listener check
      */
     public void checkJettyDeployPost(int classID, int methodID, Object[] args, Object ret, boolean blocked) {
-        if(stopX) {
+        if  (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         if (jettyDeploying != null) {
@@ -560,7 +737,7 @@ public class SmithProbeProxy {
      * check spring controller memshell
      */
     public void checkSpringControllerPre(int classID, int methodID, Object[] args)  {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         if (args.length < 3) {
@@ -568,7 +745,7 @@ public class SmithProbeProxy {
         }
         try {
             Object controller = args[2];
-            sendMetadataObject(controller);
+            sendMetadataObject(controller, classID, methodID);
         } catch (Exception e) {
             SmithLogger.exception(e);
         }
@@ -578,7 +755,7 @@ public class SmithProbeProxy {
      * check spring Interceptor memshell
      */
     public void checkSpringInterceptorPre(int classID, int methodID, Object[] args)  {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         if (args.length < 1) {
@@ -586,20 +763,20 @@ public class SmithProbeProxy {
         }
         try {
             Object interceptor = args[0];
-            sendMetadataObject(interceptor);
+            sendMetadataObject(interceptor, classID, methodID);
         } catch (Exception e) {
             SmithLogger.exception(e);
         }
     }
 
     public void checkMemshellInitPost(int classID, int methodID, Object[] args, Object ret, boolean blocked) {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         //SmithLogger.logger.info("checkMemshellInitPost call success");
         if (ret != null) {
             try {
-                sendMetadataObject(ret);
+                sendMetadataObject(ret, classID, methodID);
             } catch (Exception e) {
                 SmithLogger.exception(e);
             }
@@ -607,24 +784,34 @@ public class SmithProbeProxy {
 
     }
 
+    private boolean checkIsRaspClass(String classname) {
+
+        if (((classname.startsWith("com.security.smith.") || 
+                classname.startsWith("com.security.smithloader.") ||
+                classname.startsWith("rasp.io")) ||
+                classname.startsWith("rasp.org") ||
+                classname.startsWith("rasp.com") ||
+                classname.startsWith("rasp.javassist"))) {
+            return true;
+        }
+
+        return false;
+    }
+
     /*
      *  used for wildfly ModuleClassLoader findClass hook
      */
 
     public  Object processWildflyClassLoaderException(int classID, int methodID, Object[] args,Object exceptionObject) throws Throwable {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
+            return null;
+        }
         if(exceptionObject instanceof ClassNotFoundException) {
             String classname = (String) args[1];
 
-            if (((classname.startsWith("com.security.smith.") || 
-                 classname.startsWith("com.security.smithloader.") ||
-                 classname.startsWith("rasp.io")) ||
-                 classname.startsWith("rasp.org") ||
-                 classname.startsWith("rasp.com") ||
-                 classname.startsWith("rasp.javassist"))) {
+            if(checkIsRaspClass(classname)) {
                 return (Object)Class.forName(classname);
             }
-    
-            throw (Throwable)exceptionObject;
         }
 
         return null;
@@ -638,7 +825,7 @@ public class SmithProbeProxy {
      */
 
      public void checkWildflyaddServletPre(int classID, int methodID, Object[] args) {
-        if(stopX) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
             return;
         }
         SmithLogger.logger.info("checkWildflyaddServlet pre_hook call success");
@@ -654,18 +841,7 @@ public class SmithProbeProxy {
 
                 if(servletName != null) {
                     if (servletClass != null) {
-                        ClassFilter classFilter = new ClassFilter();
-                        SmithHandler.queryClassFilter((Class<?>)servletClass, classFilter);
-                        
-                        classFilter.setTransId();
-        
-                        classFilter.setRuleId(-1);
-                        classFilter.setStackTrace(Thread.currentThread().getStackTrace());
-                        if (client != null) {
-                            client.write(Operate.SCANCLASS, classFilter);
-                            SmithLogger.logger.info("send metadata: " + classFilter.toString());
-                            SmithProbeObj.sendClass(servletClass, classFilter.getTransId());
-                        }
+                        sendMetadataObject(servletClass, classID, methodID);
                     } else {
                         SmithLogger.logger.warning("can't find "+servletName);
                     }
@@ -675,4 +851,106 @@ public class SmithProbeProxy {
             SmithLogger.exception(e);
         }
      }
+
+         /*
+
+    public ManagedFilter addFilter(FilterInfo filterInfo)
+      
+      
+     */
+
+     public void checkWildflyaddFilterPre(int classID, int methodID, Object[] args) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
+            return;
+        }
+        SmithLogger.logger.info("checkWildflyaddFilter pre_hook call success");
+        if(args.length < 2) {
+            return ;
+        }
+
+        try {
+            Object filterInfo = args[1];
+            if(filterInfo != null) {
+                Class<?> filterClass = (Class<?>)Reflection.getField(filterInfo,"filterClass");
+                String filterName = (String)Reflection.getField(filterInfo,"name");
+
+                if(filterName != null) {
+                    if (filterClass != null) {
+                        sendMetadataObject(filterClass, classID, methodID);
+                    } else {
+                        SmithLogger.logger.warning("can't find "+filterName);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            SmithLogger.exception(e);
+        }
+     }
+
+     public void handleReflectField(int classID, int methodID, Object[] args, Object ret, boolean blocked) {
+        if(stopX) {
+            return;
+        }
+        if (args.length < 2) {
+            return ;
+        }
+        try {
+            Class<?> clas = (Class<?>)args[0];
+            String reflectClass = clas.getName();
+            String feild = (String)args[1];
+            if (reflectClass.startsWith("com.security.smith") || reflectClass.startsWith("rasp.")) {
+                return ;
+            } else {
+                if (checkReflectFeildEvil(reflectClass, feild)) {
+                    trace(classID, methodID, args, ret, blocked);
+                }
+            }
+        } catch (Throwable e) {
+            SmithLogger.exception(e);
+        }
+    }
+    
+    public void handleReflectMethod(int classID, int methodID, Object[] args, Object ret, boolean blocked) {
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
+            return;
+        }
+        if (args.length < 2) {
+            return ;
+        }
+        try {
+            Class<?> clas = (Class<?>)args[0];
+            String reflectClass = clas.getName();
+            String feild = (String)args[1];
+            if (reflectClass.startsWith("com.security.smith") || reflectClass.startsWith("rasp.")) {
+                return ;
+            } else {
+                if (checkReflectMethodEvil(reflectClass, feild)) {
+                    trace(classID, methodID, args, ret, blocked);
+                }
+            }
+        } catch (Throwable e) {
+            SmithLogger.exception(e);
+        }
+    }
+
+    /*
+     *  used for glassfish org.apache.felix.framework.BundleWiringImpl$BundleClassLoader findClass loadClass hook
+     */
+
+    public  Object processGlassfishClassLoaderfindClassException(int classID, int methodID, Object[] args,Object exceptionObject) throws Throwable {
+        //SmithLogger.logger.info("processGlassfishClassLoaderfindClass Exception_hook call success");
+        if (stopX || SmithProbeObj.isFunctionEnabled(classID, methodID) == false) {
+            return null;
+        }
+        if(exceptionObject instanceof ClassNotFoundException) {
+            String classname = (String) args[1];
+            //SmithLogger.logger.info("processGlassfishClassLoaderfindClass find class:"+classname);
+            if(checkIsRaspClass(classname)) {
+                return (Object)Class.forName(classname);
+            }
+        }
+
+        return null;
+    }
 }
+

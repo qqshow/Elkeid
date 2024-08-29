@@ -79,7 +79,7 @@ impl CPythonRuntime {
     }
     pub fn libpython_inspect(process_info: &ProcessInfo) -> Result<Option<String>> {
         let maps = procfs::process::Process::new(process_info.pid)?.maps()?;
-        let regex_str = r"libpython(\d\.\d+)\.so";
+        let regex_str = r"libpython(\d\.\d+)[m]?\.so";
         let regex = Regex::new(regex_str)?;
         for map in maps.iter() {
             if let procfs::process::MMapPath::Path(p) = map.pathname.clone() {
@@ -208,17 +208,17 @@ pub fn pangolin_inject_file(pid: i32, file_path: &str) -> Result<bool> {
                 Ok(true)
             } else if es_code == 255 {
                 let msg = format!(
-                    "python attach exit code 255: {} {} {} {}",
-                    es_code, pid, &stdout, &stderr
+                    "python attach exit code 255: {} {} {}",
+                    es_code, &stdout, &stderr
                 );
-                error!("{}", msg);
+                error!("pid: {}, {}", pid, msg);
                 Err(anyhow!("{}", msg))
             } else {
                 let msg = format!(
-                    "python attach exit code {} {} {} {}",
-                    es_code, pid, &stdout, &stderr
+                    "python attach exit code {} {} {}",
+                    es_code, &stdout, &stderr
                 );
-                error!("{}", msg);
+                error!("pid: {}, {}", pid, msg);
                 Err(anyhow!("{}", msg))
             }
         }

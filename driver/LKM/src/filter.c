@@ -5,8 +5,20 @@
  * Data allowlist for hook
  */
 
-#include "../include/filter.h"
+#include <linux/mm.h>
+#include <linux/fs.h>
+#include <linux/device.h>
+#include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/list.h>
+#include <linux/uaccess.h>
+#include <linux/spinlock.h>
+#include <linux/string.h>
+#include <linux/rbtree.h>
+#include <linux/namei.h>
+
 #include "../include/util.h"
+#include "../include/filter.h"
 
 
 #define ADD_EXECVE_EXE_ALLOWLIST 89         /* Y */
@@ -145,6 +157,7 @@ static void rbtree_clear(struct rb_node *this_node)
 static int add_execve_exe_allowlist(char *data)
 {
     struct allowlist_node *node;
+    unsigned long flags;
     int rc = 0;
 
     if (!data)
@@ -157,13 +170,13 @@ static int add_execve_exe_allowlist(char *data)
     node->len = strlen(data);
     node->hash = hash_murmur_OAAT64(data, node->len);
 
-    write_lock(&exe_allowlist_lock);
+    write_lock_irqsave(&exe_allowlist_lock, flags);
     rc = insert_rb(&execve_exe_allowlist, node);
     if (!rc) {
         execve_exe_allowlist_limit++;
-        write_unlock(&exe_allowlist_lock);
+        write_unlock_irqrestore(&exe_allowlist_lock, flags);
     } else {
-        write_unlock(&exe_allowlist_lock);
+        write_unlock_irqrestore(&exe_allowlist_lock, flags);
         smith_kfree(node);
     }
 
@@ -173,14 +186,15 @@ static int add_execve_exe_allowlist(char *data)
 static void del_execve_exe_allowlist(char *data)
 {
     struct allowlist_node *node;
+    unsigned long flags;
 
-    write_lock(&exe_allowlist_lock);
+    write_lock_irqsave(&exe_allowlist_lock, flags);
     node = search_rb(&execve_exe_allowlist, data);
     if (node) {
         rb_erase(&node->node, &execve_exe_allowlist);
         execve_exe_allowlist_limit--;
     }
-    write_unlock(&exe_allowlist_lock);
+    write_unlock_irqrestore(&exe_allowlist_lock, flags);
 
     if (node) {
         smith_kfree(node->data);
@@ -190,11 +204,13 @@ static void del_execve_exe_allowlist(char *data)
 
 static int del_all_execve_exe_allowlist(void)
 {
-    write_lock(&exe_allowlist_lock);
+    unsigned long flags;
+
+    write_lock_irqsave(&exe_allowlist_lock, flags);
     rbtree_clear(execve_exe_allowlist.rb_node);
     execve_exe_allowlist = RB_ROOT;
     execve_exe_allowlist_limit = 0;
-    write_unlock(&exe_allowlist_lock);
+    write_unlock_irqrestore(&exe_allowlist_lock, flags);
 
     return 0;
 }
@@ -202,18 +218,20 @@ static int del_all_execve_exe_allowlist(void)
 static void print_all_execve_allowlist(void)
 {
     struct rb_node *node;
+    unsigned long flags;
 
-    read_lock(&exe_allowlist_lock);
+    read_lock_irqsave(&exe_allowlist_lock, flags);
     for (node = rb_first(&execve_exe_allowlist); node; node = rb_next(node)) {
         struct allowlist_node *data =
         container_of(node, struct allowlist_node, node);
         printk("[ELKEID DEBUG] execve_allowlist:%s \n", data->data);
     }
-    read_unlock(&exe_allowlist_lock);
+    read_unlock_irqrestore(&exe_allowlist_lock, flags);
 }
 
 int execve_exe_check(char *data, int len)
 {
+    unsigned long flags;
     int res;
 
     if (IS_ERR_OR_NULL(data) || len == 0)
@@ -221,9 +239,9 @@ int execve_exe_check(char *data, int len)
     if (len == 2 && data[0] == '-' && (data[1] == '1' || data[1] == '2'))
         return 0;
 
-    read_lock(&exe_allowlist_lock);
+    read_lock_irqsave(&exe_allowlist_lock, flags);
     res = exist_rb(&execve_exe_allowlist, data);
-    read_unlock(&exe_allowlist_lock);
+    read_unlock_irqrestore(&exe_allowlist_lock, flags);
 
     return res;
 }
@@ -237,6 +255,7 @@ int execve_exe_check(char *data, int len)
 static int add_execve_argv_allowlist(char *data)
 {
     struct allowlist_node *node;
+    unsigned long flags;
     int rc = 0;
 
     if (!data)
@@ -249,13 +268,13 @@ static int add_execve_argv_allowlist(char *data)
     node->len = strlen(data);
     node->hash = hash_murmur_OAAT64(data, node->len);
 
-    write_lock(&argv_allowlist_lock);
+    write_lock_irqsave(&argv_allowlist_lock, flags);
     rc = insert_rb(&execve_argv_allowlist, node);
     if (!rc) {
         execve_argv_allowlist_limit++;
-        write_unlock(&argv_allowlist_lock);
+        write_unlock_irqrestore(&argv_allowlist_lock, flags);
     } else {
-        write_unlock(&argv_allowlist_lock);
+        write_unlock_irqrestore(&argv_allowlist_lock, flags);
         smith_kfree(node);
     }
 
@@ -265,14 +284,15 @@ static int add_execve_argv_allowlist(char *data)
 static void del_execve_argv_allowlist(char *data)
 {
     struct allowlist_node *node;
+    unsigned long flags;
 
-    write_lock(&argv_allowlist_lock);
+    write_lock_irqsave(&argv_allowlist_lock, flags);
     node = search_rb(&execve_argv_allowlist, data);
     if (node) {
         rb_erase(&node->node, &execve_argv_allowlist);
         execve_argv_allowlist_limit--;
     }
-    write_unlock(&argv_allowlist_lock);
+    write_unlock_irqrestore(&argv_allowlist_lock, flags);
 
     if (node) {
         smith_kfree(node->data);
@@ -282,28 +302,33 @@ static void del_execve_argv_allowlist(char *data)
 
 static void del_all_execve_argv_allowlist(void)
 {
-    write_lock(&argv_allowlist_lock);
+    unsigned long flags;
+
+    write_lock_irqsave(&argv_allowlist_lock, flags);
     rbtree_clear(execve_argv_allowlist.rb_node);
     execve_argv_allowlist = RB_ROOT;
     execve_argv_allowlist_limit = 0;
-    write_unlock(&argv_allowlist_lock);
+    write_unlock_irqrestore(&argv_allowlist_lock, flags);
 }
 
 static void print_all_argv_allowlist(void)
 {
     struct rb_node *node;
-    read_lock(&argv_allowlist_lock);
+    unsigned long flags;
+
+    read_lock_irqsave(&argv_allowlist_lock, flags);
     for (node = rb_first(&execve_argv_allowlist); node;
          node = rb_next(node)) {
         struct allowlist_node *data =
         container_of(node, struct allowlist_node, node);
         printk("[ELKEID DEBUG] argv_allowlist:%s \n", data->data);
     }
-    read_unlock(&argv_allowlist_lock);
+    read_unlock_irqrestore(&argv_allowlist_lock, flags);
 }
 
 int execve_argv_check(char *data, int len)
 {
+    unsigned long flags;
     int res;
 
     if (IS_ERR_OR_NULL(data) || len == 0)
@@ -311,22 +336,20 @@ int execve_argv_check(char *data, int len)
     if (len == 2 && data[0] == '-' && (data[1] == '1' || data[1] == '2'))
         return 0;
 
-    read_lock(&exe_allowlist_lock);
+    read_lock_irqsave(&exe_allowlist_lock, flags);
     res = exist_rb(&execve_argv_allowlist, data);
-    read_unlock(&exe_allowlist_lock);
+    read_unlock_irqrestore(&exe_allowlist_lock, flags);
 
     return res;
 }
 
-static ssize_t device_write(struct file *filp, const __user char *buff,
-                            size_t len, loff_t * off)
+size_t filter_process_allowlist(const __user char *buff, size_t len)
 {
+    char *data_main;
     int res;
     char flag;
-    char *data_main;
-    struct dentry *parent = NULL;
 
-    if(smith_get_user(flag, buff))
+    if (smith_get_user(flag, buff))
         return len;
 
     /* check whether length is valid */
@@ -402,13 +425,15 @@ static ssize_t device_write(struct file *filp, const __user char *buff,
         }
     }
 
-    if(parent)
-        dput(parent);
-
     if(data_main)
         smith_kfree(data_main);
-
     return len;
+}
+
+static ssize_t device_write(struct file *filp, const __user char *buff,
+                            size_t len, loff_t * off)
+{
+    return filter_process_allowlist(buff, len);
 }
 
 static int device_mmap(struct file *filp, struct vm_area_struct *vma)

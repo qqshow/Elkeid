@@ -9,6 +9,7 @@ pub mod process;
 pub mod runtime;
 #[allow(non_snake_case)]
 pub mod settings;
+pub mod parse_elf;
 
 pub mod async_command {
     use std::io::{BufRead, BufReader};
@@ -71,7 +72,7 @@ pub mod async_command {
                     break;
                 }
                 wait_count += 1;
-                if wait_count >= 120 {
+                if wait_count >= 60 {
                     warn!("kill child: {}", pid);
                     // send signal
                     kill_child(pid as i32);

@@ -1,63 +1,62 @@
 package com.security.smith.client.message;
 
 import java.time.Instant;
-import java.util.Arrays;
 
 public class ClassUpload {
 
-    private String transId;
-    private int byteTotalLength;
-    private int byteOffset;
-    private int byteLength;
-    private byte[] classData;
+    private String trans_id = "";
+    private int byte_total_length;
+    private int byte_offset;
+    private int byte_length;
+    private String class_data = "";
 
     public String getTransId() {
-        return transId;
+        return trans_id;
     }
 
     public void setTransId(String traceId) {
-        this.transId = traceId;
+        this.trans_id = traceId;
     }
 
     public int getByteTotalLength() {
-        return byteTotalLength;
+        return byte_total_length;
     }
 
     public void setByteTotalLength(int byteTotallength) {
-        this.byteTotalLength = byteTotallength;
+        this.byte_total_length = byteTotallength;
     }
 
     public int getByteOffset() {
-        return byteOffset;
+        return byte_offset;
     }
 
     public void setByteOffset(int byteOffset) {
-        this.byteOffset = byteOffset;
+        this.byte_offset = byteOffset;
     }
 
     public int getByteLength() {
-        return byteLength;
+        return byte_length;
     }
 
     public void setByteLength(int byteLength) {
-        this.byteLength = byteLength;
+        this.byte_length = byteLength;
     }
 
-    public byte[] getClassData() {
-        return classData;
+    public String getClassData() {
+        return class_data;
     }
 
-    public void setClassData(byte[] class_data) {
-        this.classData = class_data;
+    public void setClassData(String class_data) {
+        this.class_data = class_data;
     }
 
     @Override
     public String toString() {
         return "{" +
-                "transId: '" + transId + '\'' +
-                ", byteTotalLength: " + byteTotalLength +
-                ", byteOffset: " + byteOffset +
-                ", byteLength: " + byteLength +
+                "trans_id: '" + trans_id + '\'' +
+                ", byte_total_length: " + byte_total_length +
+                ", byte_offset: " + byte_offset +
+                ", byte_length: " + byte_length +
                 ", timestamp: " + Instant.now().getEpochSecond() +
                 '}';
     }

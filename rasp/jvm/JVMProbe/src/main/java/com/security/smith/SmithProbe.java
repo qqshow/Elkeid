@@ -1,13 +1,9 @@
 package com.security.smith;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.lmax.disruptor.EventHandler;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.StringReader;
-import com.esotericsoftware.yamlbeans.YamlReader;
 
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.EventFactory;
@@ -17,10 +13,14 @@ import com.security.smith.asm.SmithClassWriter;
 import com.security.smith.client.message.*;
 import com.security.smith.common.Reflection;
 import com.security.smith.common.SmithHandler;
+import com.security.smith.common.SmithTools;
+import com.security.smith.log.AttachInfo;
 import com.security.smith.log.SmithLogger;
 import com.security.smith.module.Patcher;
 import com.security.smith.type.*;
 import com.security.smith.client.*;
+import com.esotericsoftware.yamlbeans.YamlReader;
+
 
 import javassist.ClassPool;
 import javassist.CtClass;
@@ -53,9 +53,21 @@ import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import java.io.File;
 import java.io.FileOutputStream;
-import java.io.IOException;
+import java.util.jar.JarFile;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
+import com.google.gson.GsonBuilder;
+import com.security.smith.client.message.*;
+
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 
 class DetectTimerTask extends TimerTask {
         private boolean isCancel = false;
@@ -137,7 +149,9 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
     private Map<Pair<Integer, Integer>, Filter> filters;
     private Map<Pair<Integer, Integer>, Block> blocks;
     private Map<Pair<Integer, Integer>, Integer> limits;
+    private Map<String, Set<String>> hookTypes;
     private Disruptor<Trace> disruptor;
+    private Map<String, Boolean> switchConfig;
     
     private Rule_Mgr    rulemgr;
     private Rule_Config ruleconfig;
@@ -179,6 +193,7 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
     }
 
     public void init() {
+        AttachInfo.info();
         SmithLogger.loggerProberInit();
         SmithLogger.logger.info("probe init enter");
         smithClasses = new ConcurrentHashMap<>();
@@ -186,11 +201,21 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         filters = new ConcurrentHashMap<>();
         blocks = new ConcurrentHashMap<>();
         limits = new ConcurrentHashMap<>();
+        hookTypes = new ConcurrentHashMap<>();
+        switchConfig = new ConcurrentHashMap<>();
 
         MessageSerializer.initInstance(proberVersion);
+        MessageEncoder.initInstance();
+        MessageDecoder.initInstance();
+
         heartbeat = new Heartbeat();
 
-        client = new Client(this);
+        try {
+            client = new Client(this);
+        }
+        catch(Throwable e) {
+            SmithLogger.exception(e);
+        }
 
         disruptor = new Disruptor<>(new EventFactory<Trace>() {
             @Override
@@ -198,13 +223,13 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
                 return new Trace();
             }
         }, TRACE_BUFFER_SIZE, DaemonThreadFactory.INSTANCE);
-       
+
         rulemgr = new Rule_Mgr();
         ruleconfig = new Rule_Config(rulemgr);
 
         smithProxy = new SmithProbeProxy();
 
-        InputStream inputStream = getResourceAsStream("class.yaml");
+      InputStream inputStream = getResourceAsStream("class.yaml");
 
         if(inputStream != null) {
             SmithLogger.logger.info("find class.yaml");
@@ -212,23 +237,64 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
                 Reader xreader = new InputStreamReader(inputStream);
                 YamlReader yamlReader = new YamlReader(xreader);
                 for (SmithClass smithClass : yamlReader.read(SmithClass[].class)) {
+                    for (SmithMethod smithMethod : smithClass.getMethods()) {
+            
+                        if (smithMethod.getTypes() != null && !smithMethod.getTypes().isEmpty())
+                            hookTypes.put(smithClass.getId() + "-" + smithMethod.getId(), smithMethod.getTypes());
+                    }
                     smithClasses.put(smithClass.getName(), smithClass);
                 }
-            } catch (IOException e) {
+            } catch (Throwable e) {
                 SmithLogger.exception(e);
             }
         }
         else {
             SmithLogger.logger.info("not find class.yaml");
         }
-
+        
         SmithLogger.logger.info("probe init leave");
+    }
+    private boolean isBypassHookClass(String className) {
+
+        if(SmithTools.isGlassfish() && SmithTools.getMajorVersion() > 5) {
+            /*
+             * In versions after GlassFish 5 (not including GlassFish 5), 
+             * not hooking java.io.File will cause the JVM process to crash directly if hooked.
+             * 
+             */
+            if(className.equals("java.io.File")) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+    public boolean isFunctionEnabled(int classId, int methodId) {
+        String key = classId + "-" + methodId;
+        Set<String> types = hookTypes.get(key);
+        
+        if (switchConfig == null || switchConfig.isEmpty()) {
+            return true;
+        }
+
+        if (types != null) {
+            for (String type : types) {
+                if (switchConfig.getOrDefault(type, true)) {
+                    return true;
+                }
+            }
+        }
+        return false; 
     }
 
     public void start() {
-        SmithLogger.logger.info("probe start enter");
+        SmithLogger.logger.info("probe start");
+        AttachInfo.info();
 
+        SmithLogger.logger.info("init ClassUploadTransformer");
         ClassUploadTransformer.getInstance().start(client, inst);
+
+        
 
         Thread clientThread = new Thread(client::start);
 
@@ -258,6 +324,8 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         smithProxy.setClient(client);
         smithProxy.setDisruptor(disruptor);
         smithProxy.setProbe(this);
+        smithProxy.setReflectField();
+        smithProxy.setReflectMethod();
 
         inst.addTransformer(this, true);
         reloadClasses();
@@ -270,28 +338,27 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
 
         inst.removeTransformer(this);
         reloadClasses();
-        SmithLogger.logger.info("probe stop 0");
+        SmithLogger.logger.info("Transformer stop");
 
         disable = true;
         scanswitch = false;
 
         ClassUploadTransformer.getInstance().stop();
 
-        SmithLogger.logger.info("probe stop 1");
+        SmithLogger.logger.info("Upload Transformer stop");
 
         detectTimer.cancel();
         smithproxyTimer.cancel();
-        SmithLogger.logger.info("probe stop 2");
+        SmithLogger.logger.info("detect Timer stop");
         
         client.stop();
-        SmithLogger.logger.info("probe stop 3");
-
+        SmithLogger.logger.info("client stop");
         
         ruleconfig.destry();
-        SmithLogger.logger.info("probe stop 4");
+        SmithLogger.logger.info("ruleconfig stop");
 
         rulemgr.destry();
-        SmithLogger.logger.info("probe stop 5");
+        SmithLogger.logger.info("rulemgr stop");
 
         detectTimerTask = null;
         detectTimer =null;
@@ -348,12 +415,66 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         proberPath = null;
         MessageSerializer.delInstance();
 
+        MessageEncoder.delInstance();
+        MessageSerializer.delInstance();
+        MessageDecoder.delInstance();
         SmithLogger.logger.info("probe uninit leave");
         SmithLogger.loggerProberUnInit();
+        
     }
 
     private void reloadClasses() {
         reloadClasses(smithClasses.keySet());
+    }
+
+
+    private String getJarPath(Class<?> clazz) {
+        CodeSource codeSource = clazz.getProtectionDomain().getCodeSource();
+        if (codeSource != null) {
+            URL location = codeSource.getLocation();
+            try {
+                File file = new File(location.toURI());
+                return file.getAbsolutePath();
+            } catch (Exception e) {
+                SmithLogger.exception(e);
+            }
+        }
+        return null;
+    }
+
+    private String[] addJarclassns = {
+        "org.apache.felix.framework.BundleWiringImpl$BundleClassLoader"
+    };
+    
+    private Set<String> addedJarset = Collections.synchronizedSet(new HashSet<>());
+
+    public void checkNeedAddJarPath(Class<?> clazz,Instrumentation inst) {
+        try {
+            String cn = clazz.getName();
+            for (String name : addJarclassns) {
+                if(cn.equals(name)) {
+                    try {
+                        String jarFile = getJarPath(clazz);
+                        if(jarFile != null && !addedJarset.contains(jarFile)) {
+                            SmithLogger.logger.info("add "+ name + " jarpath:"+jarFile);
+                            inst.appendToSystemClassLoaderSearch(new JarFile(jarFile));
+                            addedJarset.add(jarFile);
+                        }
+                    }catch(Exception e) {
+                        SmithLogger.exception(e);
+                    }
+                }
+            }
+        }
+        catch(Exception e) {
+            SmithLogger.exception(e);
+        }
+    }
+
+    public void checkNeedAddJarPaths(Class<?>[] cls,Instrumentation inst) {
+        for (Class<?> cx : cls) {
+            checkNeedAddJarPath(cx,inst);
+        } 
     }
 
     private void reloadClasses(Collection<String> classes) {
@@ -369,6 +490,8 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
 
         SmithLogger.logger.info("reload: " + Arrays.toString(cls));
 
+        checkNeedAddJarPaths(cls,inst);
+
         try {
             inst.retransformClasses(cls);
         } catch (UnmodifiableClassException e) {
@@ -381,7 +504,13 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         Filter filter = filters.get(new ImmutablePair<>(trace.getClassID(), trace.getMethodID()));
 
         if (filter == null) {
-            client.write(Operate.TRACE, trace);
+                Gson gson = new GsonBuilder()
+                .registerTypeAdapter(Trace.class, new TraceSerializer())
+                .registerTypeAdapter(Trace.class, new TraceDeserializer())
+                .create();
+            JsonElement jsonElement = gson.toJsonTree(trace);
+
+            client.write(Operate.TRACE, jsonElement);
             return;
         }
 
@@ -396,7 +525,13 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         if (exclude.length > 0 && Arrays.stream(exclude).anyMatch(pred))
             return;
 
-        client.write(Operate.TRACE, trace);
+        Gson gson = new GsonBuilder()
+            .registerTypeAdapter(Trace.class, new TraceSerializer())
+            .registerTypeAdapter(Trace.class, new TraceDeserializer())
+            .create();
+        JsonElement jsonElement = gson.toJsonTree(trace);
+
+        client.write(Operate.TRACE, jsonElement);
     }
 
     public void printClassfilter(ClassFilter data) {
@@ -497,7 +632,13 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
                 classFilter.setTransId();
                 classFilter.setStackTrace(Thread.currentThread().getStackTrace());
 
-                client.write(Operate.SCANCLASS, classFilter);
+                Gson gson = new GsonBuilder()
+                .registerTypeAdapter(ClassFilter.class, new ClassFilterSerializer())
+                .registerTypeAdapter(ClassFilter.class, new ClassFilterDeserializer())
+                .create();
+                JsonElement jsonElement = gson.toJsonTree(classFilter);
+
+                client.write(Operate.SCANCLASS, jsonElement);
                 SmithLogger.logger.info("send metadata: " + classFilter.toString());
                 Thread.sleep(1000);
                 sendByte(classfileBuffer, classFilter.getTransId());
@@ -526,27 +667,7 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         return false;
     }
 
-    public boolean checkInterfaceNeedTran(String interfaceName) {
-        if (interfaceName == null) {
-            return false;
-        }
-        boolean ret = false;
-        switch (interfaceName) {
-            case "org/springframework/web/servlet/HandlerInterceptor":
-            case "javax/servlet/Servlet":
-            case "javax/servlet/Filter":
-            case "javax/servlet/ServletRequestListener":
-            case "jakarta/servlet/Servlet":
-            case "jakarta/servlet/Filter":
-            case "jakarta/servlet/ServletRequestListener":
-            case "javax/websocket/Endpoint":
-                ret = true;
-                break;
-            default:
-                break;
-        }
-        return ret;
-    }
+   
     @Override
     public byte[] transform(ClassLoader loader, String className, Class<?> classBeingRedefined, ProtectionDomain protectionDomain, byte[] classfileBuffer) {
          if (disable)
@@ -564,30 +685,42 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         } catch (Exception e) {
             //SmithLogger.exception(e);
         }
-     
-        if (smithClass == null && className == null)  {
+
+        if (smithClass == null)  {
             
             ClassReader cr = new ClassReader(classfileBuffer);
-            String[] interfaces = cr.getInterfaces();
+
             if (className == null) {
                 className = cr.getClassName();
                 classType = Type.getObjectType(className);
             }
+            String[] interfaces = cr.getInterfaces();
+            String superClass = cr.getSuperName();
 
-            for (String interName : interfaces) {
-                if (checkInterfaceNeedTran(interName)) {
-                    Type interfaceType = Type.getObjectType(interName);
-                    smithClass = smithClasses.get(interfaceType.getClassName());
-                    break;
+            try {
+                String[] combined;
+                if (superClass != null) {
+                    combined = new String[interfaces.length + 1];
+                    System.arraycopy(interfaces, 0, combined, 0, interfaces.length);
+                    combined[interfaces.length] = superClass;
+                } else {
+                    combined = interfaces;
                 }
+
+                for (String interName : combined) {
+                    if (SmithHandler.checkInterfaceNeedTran(interName)) {
+                        Type interfaceType = Type.getObjectType(interName);
+                        smithClass = smithClasses.get(interfaceType.getClassName());
+                        break;
+                    }
+                }
+            } catch (Throwable e) {
+                SmithLogger.exception(e);
             }
+            
             if (smithClass == null) {
                 return null;
             }
-        } 
-
-        if (smithClass == null) {
-            return null;
         }
 
         try {
@@ -617,11 +750,11 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
                     methodMap
             );
 
-
             classReader.accept(classVisitor, ClassReader.EXPAND_FRAMES);  
- 
+
             return classWriter.toByteArray();
-        } catch (Throwable e) {
+        }
+        catch(Throwable e) {
             SmithLogger.exception(e);
         }
 
@@ -654,6 +787,26 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         SmithLogger.logger.info("on control: " + action);
         disable = action == STOP;
         reloadClasses();
+    }
+
+     public static JsonElement convertJarsToJsonElement(Set<Jar> jars) {
+        Gson gson = new Gson();
+
+        JsonArray jarsArray = new JsonArray();
+        for (Jar jar : jars) {
+            JsonObject jarObj = new JsonObject();
+            jarObj.addProperty("path", jar.getPath());
+            jarObj.addProperty("implementationTitle", jar.getImplementationTitle());
+            jarObj.addProperty("implementationVersion", jar.getImplementationVersion());
+            jarObj.addProperty("specificationTitle", jar.getSpecificationTitle());
+            jarObj.addProperty("specificationVersion", jar.getSpecificationVersion());
+            jarsArray.add(jarObj);
+        }
+
+        JsonObject jsonObj = new JsonObject();
+        jsonObj.add("jars", jarsArray);
+
+        return jsonObj;
     }
 
     @Override
@@ -693,7 +846,9 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
             jars.add(jar);
         }
 
-        client.write(Operate.DETECT, Collections.singletonMap("jars", jars));
+        JsonElement jsonElement = convertJarsToJsonElement(jars);
+
+        client.write(Operate.DETECT, jsonElement);
     }
 
     @Override
@@ -740,6 +895,10 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
 
     @Override
     public void onPatch(PatchConfig config) {
+        if (config == null || config.getPatches() == null || config.getPatches().length == 0) {
+            SmithLogger.logger.info("patch may not be download, so not update heartbeat");
+            return ;
+        }
         for (Patch patch : config.getPatches()) {
             SmithLogger.logger.info("install patch: " + patch.getClassName());
 
@@ -841,8 +1000,11 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
                     if (className.startsWith("rasp.") || className.startsWith("com.security.smith") || className.startsWith("java.lang.invoke.LambdaForm")) {
                         continue;
                     }
-                    
 
+                    if(classIsSended(clazz)) {
+                        continue;
+                    }
+                    
                     ClassFilter classFilter = new ClassFilter();
                     
                     SmithHandler.queryClassFilter(clazz, classFilter);
@@ -856,7 +1018,13 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
                     classFilter.setRuleId(rule_id);
                     classFilter.setStackTrace(Thread.currentThread().getStackTrace());
 
-                    client.write(Operate.SCANCLASS, classFilter);
+                    Gson gson = new GsonBuilder()
+                    .registerTypeAdapter(ClassFilter.class, new ClassFilterSerializer())
+                    .registerTypeAdapter(ClassFilter.class, new ClassFilterDeserializer())
+                    .create();
+                    JsonElement jsonElement = gson.toJsonTree(classFilter);
+
+                    client.write(Operate.SCANCLASS, jsonElement);
                     SmithLogger.logger.info("send metadata: " + classFilter.toString());
                     sendClass(clazz, classFilter.getTransId());
 
@@ -887,6 +1055,16 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         }
     }
 
+    public boolean classIsSended(Class<?> clazz) {
+        try {
+            return ClassUploadTransformer.getInstance().classIsSended(clazz.hashCode());
+        } catch (Exception e) {
+            SmithLogger.exception(e);
+        }
+
+        return false;
+    }
+
     /*
      * send CtClass file 
      */
@@ -897,10 +1075,10 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         int length = data.length;
         ClassUpload classUpload = new ClassUpload();
         classUpload.setTransId(transId);
-        // TODO
+
         // client.write(Operate.CLASSDUMP, classUpload);
 
-        // int packetSize = 1024; 
+        // int packetSize = 1024; \
         // int totalPackets = (data.length + packetSize - 1) / packetSize;
         //for (int i = 0; i < totalPackets; i++) {
             //int offset = i * packetSize;
@@ -908,15 +1086,36 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
             //classUpload.setByteOffset(offset);
             classUpload.setByteLength(length);
             //int send_length = Math.min(packetSize, data.length - offset);
-            classUpload.setClassData(data);
+            Base64.Encoder encoder = Base64.getEncoder();
+            String dataStr = encoder.encodeToString(data);
+            classUpload.setClassData(dataStr);
 
-            client.write(Operate.CLASSUPLOAD, classUpload);
+            Gson gson = new Gson();
+            JsonElement jsonElement = gson.toJsonTree(classUpload);
+
+            client.write(Operate.CLASSUPLOAD, jsonElement);
             SmithLogger.logger.info("send classdata: " + classUpload.toString());
         //}
     }
 
+    @Override
+    public void onSwitches(SwitchConfig switches) {
+        if (switches == null || switches.getSwitches() == null) {
+            return;
+        }
+        switchConfig = switches.getSwitches();
+
+        heartbeat.setSwitches(switches.getUUID());
+    }
+
     public Heartbeat getHeartbeat() {
         return heartbeat;
+    }
+
+    public void addDisacrdCount() {
+        int discrad_count = this.heartbeat.getDiscardCount();
+        discrad_count++;
+        this.heartbeat.setDiscardCount(discrad_count);
     }
 
     public Map<Pair<Integer, Integer>, Integer>  getLimits() {
@@ -939,4 +1138,21 @@ public class SmithProbe implements ClassFileTransformer, MessageHandler, EventHa
         return disruptor;
     }
 
+    public String getFuncTypes(int classId, int methodId) {
+        String types = "";
+        try {
+            
+            if (hookTypes.containsKey(classId + "-" + methodId)) {
+                for (String type: hookTypes.get(classId + "-" + methodId)) {
+                    types += type + ",";
+                }
+            }
+            if (types.length() > 0) {
+                types = types.substring(0, types.length() - 1);
+            }
+        } catch (Exception e) {
+            SmithLogger.exception(e);
+        }
+        return types;
+    }
 }

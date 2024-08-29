@@ -1,16 +1,14 @@
-use anyhow::{anyhow, Result};
-
 use log::*;
 use regex::Regex;
 use std::process::Command;
 use std::fs;
-use std::thread;
 use std::time::Duration;
 use crate::async_command::run_async_process;
 use crate::process::ProcessInfo;
 use crate::runtime::{ProbeCopy, ProbeState, ProbeStateInspect};
 use crate::settings::{self, RASP_VERSION};
 use lazy_static::lazy_static;
+use anyhow::{anyhow, Result};
 
 lazy_static! {
     static ref RASP_JAVA_CHECKSUMSTR: String = {
@@ -75,7 +73,7 @@ pub fn java_attach(pid: i32) -> Result<bool> {
             let es_code = match es.code() {
                 Some(ec) => ec,
                 None => {
-                    return Err(anyhow!("get status code failed: {}", pid));
+                    return Err(anyhow!("get status code failed: {}, output: {}, err: {}", pid, out, err));
                 }
             };
             if es_code == 0 {
@@ -84,16 +82,24 @@ pub fn java_attach(pid: i32) -> Result<bool> {
                     Ok(_) => {
                         return Ok(true);
                     }
-                    Err(e) => {
-                        return Err(anyhow!(e.to_string()));
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_millis(500));
+                        match check_result(pid, "attach") {
+                            Ok(_) => {
+                                return Ok(true);
+                            }
+                            Err(e) => {
+                                return Err(anyhow!(e.to_string()));
+                            }
+                        }
                     }
                 }
             } else {
                 let msg = format!(
-                    "jvm attach exit code {} {} {} {}",
-                    es_code, pid, &out, &err
+                    "jvm attach exit code {} {} {}",
+                    es_code, &out, &err
                 );
-                error!("{}", msg);
+                error!("pid: {}, {}", pid, msg);
                 Err(anyhow!("{}", msg))
             }
         }
@@ -105,15 +111,24 @@ pub fn java_attach(pid: i32) -> Result<bool> {
 
 pub fn jcmd(pid: i32, cmd: &'static str) -> Result<Vec<u8>> {
     let java_attach = settings::RASP_JAVA_JATTACH_BIN();
-
-    let output = match Command::new(java_attach)
-        .args(&[pid.to_string().as_str(), "jcmd", cmd])
-        .output()
-    {
-        Ok(s) => s,
-        Err(e) => return Err(anyhow!(e.to_string())),
-    };
-    Ok(output.stdout)
+    match run_async_process(Command::new(java_attach).args(&[
+        pid.to_string().as_str(),
+        "jcmd",
+       cmd,
+    ])) {
+        Ok((_, out, err)) => {
+            // if out.len() != 0 {
+            //     info!("{}", &out);
+            // }
+            if err.len() != 0 {
+                info!("pid: {}, {}", pid, &err);
+            }
+            return Ok(out.into())
+        }
+        Err(e) => {
+            Err(anyhow!(e.to_string()))
+        }
+    }
 }
 
 pub fn vm_version(pid: i32) -> Result<i32> {
@@ -133,6 +148,25 @@ pub fn vm_version(pid: i32) -> Result<i32> {
         }
         Err(e) => Err(anyhow!(e)),
     };
+}
+
+pub fn check_java_version(ver: &String, pid:i32) -> Result<()> {
+    let ver:u32 = match ver.parse::<u32>() {
+        Ok(v) => {v}
+        Err(_) => {0}
+    };
+    if ver < 8 {
+        warn!("process {} Java version lower than 8: {}, so not inject", pid, ver);
+        let msg = format!("Java version lower than 8: {}, so not inject", ver);
+        return Err(anyhow!(msg));
+    } else if ver == 13 || ver == 14 {
+        // jdk bug https://bugs.openjdk.org/browse/JDK-8222005
+        warn!("process {} Java version {} has attach bug, so not inject", pid, ver);
+        let msg = format!("process {} Java version {} has attach bug, so not inject", pid, ver);
+        return Err(anyhow!(msg));
+    } else {
+        return Ok(());
+    }
 }
 
 pub fn prop(pid: i32) -> Result<ProbeState> {
@@ -218,10 +252,10 @@ pub fn java_detach(pid: i32) -> Result<bool> {
                 }
             } else {
                 let msg = format!(
-                    "jvm detach exit code {} {} {} {}",
-                    es_code, pid, &out, &err
+                    "jvm detach exit code {} {} {}",
+                    es_code, &out, &err
                 );
-                error!("{}", msg);
+                error!("pid: {}, {}", pid, msg);
                 Err(anyhow!("{}", msg))
             }      
         }
